@@ -211,7 +211,7 @@ export function readDesktopVersion(asarPath) {
     const jsonSize = prefix.readUInt32LE(12);
     if (jsonSize === 0 || 16 + jsonSize > fileSize) return null;
     const header = JSON.parse(readExactly(fd, jsonSize, 16).toString("utf8"));
-    const node = header?.files?.package?.files?.["package.json"];
+    const node = header?.files?.["package.json"];
     if (node === undefined || node.unpacked || node.files) return null;
     const start = dataOffset + Number(node.offset);
     const size = Number(node.size);

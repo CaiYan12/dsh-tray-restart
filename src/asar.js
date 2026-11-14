@@ -433,8 +433,17 @@ export function applyTrayRestart(asarPath, options = {}) {
 /**
  * Restore the tray region of a real `app.asar` to the stock text.
  *
+ * The stock bytes come from the Backup written before the first patch. A caller
+ * that already holds them — the test suite, which has the stock `lib/main.js` as
+ * a fixture — can pass them as `stockRegion` instead; the backup is then not read
+ * and `backupUsed` stays false. That is the one way to restore a patched asar whose
+ * backup directory is gone.
+ *
  * @param {string} asarPath
- * @param {{ syntaxCheck?: (source: Buffer) => import("./syntax.js").SyntaxCheckResult }} [options]
+ * @param {{
+ *   syntaxCheck?: (source: Buffer) => import("./syntax.js").SyntaxCheckResult,
+ *   stockRegion?: Buffer
+ * }} [options]
  * @returns {TrayRestartResult}
  */
 export function restoreTrayRestart(asarPath, options = {}) {
@@ -442,6 +451,7 @@ export function restoreTrayRestart(asarPath, options = {}) {
     // Only a patched region needs the backup. An asar without the marker is left
     // alone, so it must not fail just because no backup was ever written.
     if (!main.includes(PATCH_MARKER)) return restoreDesktopMain(main);
+    if (options.stockRegion !== undefined) return restoreDesktopMain(main, options.stockRegion);
     const backup = hooks.readBackup();
     return restoreDesktopMain(main, backup.region);
   }, options);

@@ -4,7 +4,9 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { restoreTrayRestart } from "../src/asar.js";
 import { BACKUP_DIR_ENV } from "../src/backup.js";
+import { PATCH_MARKER } from "../src/patch.js";
 
 export const here = dirname(fileURLToPath(import.meta.url));
 export const repoRoot = resolve(here, "..");
@@ -150,6 +152,48 @@ export function sandboxAsar(root) {
   const backup = join(dir, "backup");
   process.env[BACKUP_DIR_ENV] = backup;
   return { dir, asarCopy, backup };
+}
+
+/**
+ * A fresh copy of the installed asar, forced back to the stock tray region.
+ *
+ * The installed asar is whatever state the machine is in: a user who has run the
+ * plugin has a patched one, and its bytes are not the stock bytes every
+ * integration test compares against. The copy is therefore restored in place
+ * before it is handed out, so the suite gives the same answer for a stock asar
+ * and a patched one.
+ *
+ * Restoring a patched copy needs the stock region bytes. They come from the
+ * fixture when it is available, and from the backup written before the first
+ * patch otherwise. A patched asar with neither cannot be restored here, so the
+ * test fails with that explanation instead of comparing against patched bytes.
+ *
+ * @param {string} root a temp directory owned by the caller.
+ * @returns {{ dir: string, asarCopy: string, backup: string }}
+ */
+export function sandboxStockAsar(root) {
+  const sandbox = sandboxAsar(root);
+  const { asarCopy } = sandbox;
+  const main = readEntry(readFileSync(asarCopy), MAIN_PATH);
+  if (!main.includes(PATCH_MARKER)) return sandbox;
+
+  const stockMain = loadStockMain();
+  const stockRegion = stockMain === null
+    ? undefined
+    : stockMain.subarray(STOCK_REGION_START, STOCK_REGION_START + STOCK_REGION_LENGTH);
+  try {
+    restoreTrayRestart(asarCopy, stockRegion === undefined ? {} : { stockRegion });
+  } catch (error) {
+    throw new Error(
+      `could not restore the installed asar to the stock tray region: ${error.message}. ` +
+        "Point DSH_TRAY_FIXTURE at the stock lib/main.js (or run npm run restore:install " +
+        "on the installation) so the integration suites can start from stock bytes."
+    );
+  }
+  if (readEntry(readFileSync(asarCopy), MAIN_PATH).includes(PATCH_MARKER)) {
+    throw new Error("restoring the installed asar did not remove the tray patch");
+  }
+  return sandbox;
 }
 
 /**

@@ -8,11 +8,13 @@ import {
   REAL_ASAR_PATH,
   REGION_START_MARKER,
   STOCK_ASAR_BYTES,
+  STOCK_MAIN_BYTES,
   asarSkip,
   loadStockMain,
   nodeAt,
   readEntry,
   readHeader,
+  sandboxStockAsar,
   sha256,
   tempDir
 } from "./fixture.js";
@@ -23,6 +25,11 @@ import { BACKUP_DIR_ENV } from "../src/backup.js";
 /**
  * The installed asar. Only ever read: every test that writes works on a
  * temporary copy made once in `before`.
+ *
+ * The copy is forced back to the stock tray region before the first test runs,
+ * so the suite behaves the same whether the installation is stock or already
+ * patched. Without that, a patched installation turned every "changed" assertion
+ * below into a false failure.
  */
 const skip = asarSkip();
 
@@ -36,13 +43,12 @@ let previousBackupEnv;
 before(() => {
   if (skip) return;
   workDir = tempDir("dsh-tray-restart-asar-");
-  asarCopy = join(workDir, "app.asar");
-  copyFileSync(REAL_ASAR_PATH, asarCopy);
-  stockMain = loadStockMain();
-  // applyTrayRestart writes a backup; keep it inside the temp directory so the
+  // sandboxStockAsar copies the installed asar and restores the copy to the stock
+  // tray region, and points the backup directory inside the temp directory so the
   // real ~/.dsh/tray-restart-backup is never touched by the test suite.
   previousBackupEnv = process.env[BACKUP_DIR_ENV];
-  process.env[BACKUP_DIR_ENV] = join(workDir, "backup");
+  asarCopy = sandboxStockAsar(workDir).asarCopy;
+  stockMain = loadStockMain();
 });
 
 after(() => {
@@ -182,19 +188,34 @@ test("a second restoreTrayRestart reports changed false", { skip }, () => {
 });
 
 test("the real installed asar is never modified by the tests", { skip }, () => {
+  // The installation may be stock or already patched by the plugin; either is a
+  // legitimate state for a user's machine. What must not change is the archive
+  // itself, so the whole file is compared before and after a full copy-and-patch.
   const real = readFileSync(REAL_ASAR_PATH);
-  assert.equal(real.length, STOCK_ASAR_BYTES);
+  assert.equal(real.length, STOCK_ASAR_BYTES, "an asar patch is equal-length");
   const main = readEntry(real, MAIN_PATH);
-  assert.ok(!main.includes(PATCH_MARKER), "the installed asar must still be stock");
+  assert.equal(main.length, STOCK_MAIN_BYTES);
+
+  const dir = tempDir("dsh-tray-restart-untouched-");
+  try {
+    const copy = join(dir, "app.asar");
+    copyFileSync(REAL_ASAR_PATH, copy);
+    applyTrayRestart(copy);
+    restoreTrayRestart(copy);
+    assert.ok(readFileSync(REAL_ASAR_PATH).equals(real), "the installed asar must be byte-identical");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 // ── the syntax gate: nothing is written unless the candidate parses ───────
 
 test("a candidate that fails the syntax check is refused and the asar is untouched", { skip }, () => {
   const dir = tempDir("dsh-tray-restart-syntax-");
-  const copy = join(dir, "app.asar");
   try {
-    copyFileSync(REAL_ASAR_PATH, copy);
+    // A stock copy: an already patched one would make the patch a no-op and never
+    // reach the syntax gate this test is about.
+    const copy = sandboxStockAsar(dir).asarCopy;
     const before = readFileSync(copy);
 
     assert.throws(
@@ -214,9 +235,8 @@ test("a candidate that fails the syntax check is refused and the asar is untouch
 
 test("a syntax check that cannot run is refused rather than skipped", { skip }, () => {
   const dir = tempDir("dsh-tray-restart-syntax-");
-  const copy = join(dir, "app.asar");
   try {
-    copyFileSync(REAL_ASAR_PATH, copy);
+    const copy = sandboxStockAsar(dir).asarCopy;
     const before = readFileSync(copy);
 
     assert.throws(
@@ -238,11 +258,9 @@ test("a syntax check that cannot run is refused rather than skipped", { skip }, 
 
 test("the real syntax gate accepts the real patch", { skip }, () => {
   const dir = tempDir("dsh-tray-restart-syntax-");
-  const copy = join(dir, "app.asar");
   const previous = process.env[BACKUP_DIR_ENV];
-  process.env[BACKUP_DIR_ENV] = join(dir, "backup");
   try {
-    copyFileSync(REAL_ASAR_PATH, copy);
+    const copy = sandboxStockAsar(dir).asarCopy;
     const result = applyTrayRestart(copy);
     assert.equal(result.changed, true);
   } finally {

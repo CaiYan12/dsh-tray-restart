@@ -8,7 +8,7 @@ import {
   loadStockMain,
   readEntry,
   readJsonEntry,
-  sandboxAsar,
+  sandboxStockAsar,
   sha256,
   tempDir
 } from "./fixture.js";
@@ -16,7 +16,11 @@ import { PATCH_MARKER } from "../src/patch.js";
 import { applyTrayRestart, restoreTrayRestart } from "../src/asar.js";
 import { BACKUP_DIR_ENV, backupExists, readBackup } from "../src/backup.js";
 
-/** The installed asar. Only ever read: every test works on its own copy. */
+/**
+ * The installed asar. Only ever read: every test works on its own copy, and every
+ * copy is forced back to the stock tray region first, so the suite gives the same
+ * answer whether the installation is stock or already patched.
+ */
 const skip = asarSkip();
 
 /** @type {string} */
@@ -24,6 +28,11 @@ let workRoot;
 /** @type {string} */
 let stockMain;
 let previousBackupEnv;
+
+/** A fresh asar copy, restored to the stock tray region. */
+function stockSandbox() {
+  return sandboxStockAsar(workRoot);
+}
 
 before(() => {
   if (skip) return;
@@ -39,7 +48,7 @@ after(() => {
 });
 
 test("the first patch writes a backup of the stock region before patching", { skip }, (t) => {
-  const { asarCopy } = sandboxAsar(workRoot);
+  const { asarCopy } = stockSandbox();
   const original = readFileSync(asarCopy);
   const originalMain = readEntry(original, MAIN_PATH);
   const regionStart = originalMain.indexOf(REGION_START_MARKER);
@@ -63,7 +72,7 @@ test("the first patch writes a backup of the stock region before patching", { sk
 });
 
 test("patching again does not overwrite the existing backup", { skip }, (t) => {
-  const { asarCopy } = sandboxAsar(workRoot);
+  const { asarCopy } = stockSandbox();
   applyTrayRestart(asarCopy);
   const first = readBackup();
 
@@ -80,7 +89,7 @@ test("patching again does not overwrite the existing backup", { skip }, (t) => {
 });
 
 test("restore reads the backup and writes those bytes back", { skip }, (t) => {
-  const { asarCopy } = sandboxAsar(workRoot);
+  const { asarCopy } = stockSandbox();
   const original = readFileSync(asarCopy);
   applyTrayRestart(asarCopy);
   const backup = readBackup();
@@ -101,7 +110,7 @@ test("restore reads the backup and writes those bytes back", { skip }, (t) => {
 });
 
 test("restore without a backup throws a clear error and leaves the asar alone", { skip }, (t) => {
-  const { asarCopy } = sandboxAsar(workRoot);
+  const { asarCopy } = stockSandbox();
   applyTrayRestart(asarCopy);
   const patched = readFileSync(asarCopy);
   rmSync(process.env[BACKUP_DIR_ENV], { recursive: true, force: true });
@@ -115,7 +124,7 @@ test("restore without a backup throws a clear error and leaves the asar alone", 
 });
 
 test("restore on a never-patched asar still reports changed false without a backup", { skip }, (t) => {
-  const { asarCopy } = sandboxAsar(workRoot);
+  const { asarCopy } = stockSandbox();
   const original = readFileSync(asarCopy);
   const result = restoreTrayRestart(asarCopy);
   assert.equal(result.changed, false);

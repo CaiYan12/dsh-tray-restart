@@ -11,7 +11,7 @@ import {
   STOCK_REGION_START,
   asarSkip,
   repoRoot,
-  sandboxAsar,
+  sandboxStockAsar,
   tempDir
 } from "./fixture.js";
 import { PATCH_MARKER } from "../src/patch.js";
@@ -39,9 +39,15 @@ const skip = asarSkip();
 let workRoot;
 let previousBackupEnv;
 
-/** A fresh asar copy plus a fresh, empty backup directory under the temp root. */
+/**
+ * A fresh asar copy plus a fresh, empty backup directory under the temp root.
+ *
+ * The copy is restored to the stock tray region first: the cases below assert the
+ * stock state, and the installed asar is not necessarily stock — a user who has
+ * run the plugin has a patched one.
+ */
 function sandbox() {
-  return sandboxAsar(workRoot);
+  return sandboxStockAsar(workRoot);
 }
 
 before(() => {

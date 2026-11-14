@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -11,10 +11,11 @@ import {
   DSH_RANGE,
   notificationBody,
   notificationCopy,
+  readDesktopVersion,
   shouldPatch,
   versionSupported
 } from "../src/index.js";
-import { STOCK_MAIN_BYTES, repoRoot } from "./fixture.js";
+import { REAL_ASAR_PATH, STOCK_MAIN_BYTES, asarSkip, repoRoot } from "./fixture.js";
 
 /**
  * Minimal stand-in for the Cordis context the Host hands to a plugin.
@@ -320,6 +321,59 @@ test("versionSupported reports why an unsupported version is refused", () => {
 test("DSH_RANGE is the range the manifest declares", () => {
   const manifest = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8"));
   assert.equal(DSH_RANGE, manifest.engines.dsh);
+});
+
+// ── readDesktopVersion: the version gate reads the asar's own manifest ────
+//
+// The version gate is only as good as this read. It once looked for the manifest
+// one level too deep (`header.files.package.files["package.json"]` instead of
+// `header.files["package.json"]`), so every real asar reported null and the
+// plugin silently refused to patch. The tests below read a real archive, which is
+// the only input that catches that mistake: a hand-built header can be made to
+// match whatever path the code happens to use.
+
+/** The asar suites' skip: this read needs a real archive, not the fixture. */
+const asarOnlySkip = asarSkip();
+
+test("readDesktopVersion reads the version from a real asar", { skip: asarOnlySkip }, () => {
+  assert.equal(readDesktopVersion(REAL_ASAR_PATH), "0.2.2-rc.3");
+});
+
+test("readDesktopVersion reads the version from a copy of a real asar", { skip: asarOnlySkip }, () => {
+  const dir = mkdtempSync(join(tmpdir(), "dsh-tray-restart-version-"));
+  const copy = join(dir, "app.asar");
+  try {
+    copyFileSync(REAL_ASAR_PATH, copy);
+    assert.equal(readDesktopVersion(copy), "0.2.2-rc.3");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the version read by readDesktopVersion passes the plugin's own range", { skip: asarOnlySkip }, () => {
+  const version = readDesktopVersion(REAL_ASAR_PATH);
+  assert.notEqual(version, null, "a real asar must yield a version, not null");
+  assert.equal(versionSupported(version, DSH_RANGE).supported, true);
+});
+
+test("readDesktopVersion returns null for a file that is not an asar", () => {
+  const dir = mkdtempSync(join(tmpdir(), "dsh-tray-restart-not-asar-"));
+  const file = join(dir, "app.asar");
+  try {
+    writeFileSync(file, "not an asar at all");
+    assert.equal(readDesktopVersion(file), null);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("readDesktopVersion returns null for a missing file", () => {
+  const dir = mkdtempSync(join(tmpdir(), "dsh-tray-restart-missing-"));
+  try {
+    assert.equal(readDesktopVersion(join(dir, "app.asar")), null);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 // ── apply: the version gate blocks the patch ──────────────────────────────
