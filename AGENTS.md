@@ -41,7 +41,7 @@ dataOffset = 8 + u32@4        <- NOT 16 + u32@12
 
 `lib/main.js` is at `offset 201509551`, `size 848505`, absolute **207179531**.
 The tray region `//#region lib/types/tray.js` … `//#endregion` is **1254 bytes**
-long and starts at **779389**.
+long (including the trailing newline) and starts at **759609**.
 
 See `docs/research/step1-findings.md` for the full measurement record.
 
