@@ -34,13 +34,18 @@ const RESTART_ACTION =
  * The stock region is exactly full: the restart item plus its marker need more
  * bytes than the region has spare. These three JSDoc comments are the only
  * reclaimable bytes that carry no behaviour, so removing them keeps every line
- * of code intact and the file length unchanged. The class comment and the
- * `relabel()` comment are deliberately kept.
+ * of code intact and the file length unchanged. The `relabel()` comment
+ * documents behaviour and is deliberately kept.
+ *
+ * Each entry names the code the comment documents rather than the comment text,
+ * so a reworded comment on a supported build is still reclaimed: the whole line
+ * is dropped when it is a JSDoc line (or a run of them) directly above that code.
+ * Only the comment wording would change in a reword, not the declaration.
  */
 const RECLAIMED_COMMENTS = [
-  "/** Tray icon present for the whole run, not only while the window is hidden. */\n",
-  "\t/** @param options - Icon path, locale reader, and the open and quit actions. */\n",
-  "\t/** Remove the icon; called once the quit is confirmed so no dead icon outlives the process. */\n"
+  { above: "var DesktopTray = class {", why: "the class-level JSDoc" },
+  { above: "\tconstructor(options) {", why: "the constructor JSDoc" },
+  { above: "\tdispose() {", why: "the dispose JSDoc" }
 ];
 
 /** Thrown when the build does not look like a supported DSH Desktop release. */
@@ -48,6 +53,59 @@ export class UnsupportedBuildError extends Error {
   constructor(reason) {
     super(`unsupported DSH Desktop build: ${reason}`);
     this.name = "UnsupportedBuildError";
+  }
+}
+
+/**
+ * Drop the JSDoc line (or run of lines) directly above `anchor`.
+ *
+ * Matching on the anchor instead of the comment text keeps the reclaim working
+ * when DSH rewords a comment, which carries no behaviour and is not part of the
+ * contract this patch relies on. The error still names the region and the
+ * declaration, so a genuine layout change is diagnosable.
+ *
+ * @param {string} text the tray region.
+ * @param {{ above: string, why: string }} target
+ * @returns {string}
+ */
+function dropCommentAbove(text, target) {
+  const anchorAt = text.indexOf(target.above);
+  if (anchorAt === -1) {
+    throw new UnsupportedBuildError(
+      `tray region no longer contains "${target.above.trim()}"; ` +
+        `the stock region layout changed and ${target.why} cannot be reclaimed`
+    );
+  }
+  // The anchor sits at the start of its line, so the text before it ends with
+  // that line's own newline: the last split segment is empty and the comment
+  // run starts one segment earlier.
+  const lines = text.slice(0, anchorAt).split("\n");
+  let last = lines.length - 1;
+  while (last >= 0 && lines[last] === "") last -= 1;
+  let first = last;
+  while (first >= 0 && /^\s*\/\*\*.*\*\/\s*$/.test(lines[first])) first -= 1;
+  if (first === last) {
+    throw new UnsupportedBuildError(
+      `tray region has no JSDoc line above "${target.above.trim()}"; ` +
+        `the stock region comment wording changed and ${target.why} cannot be reclaimed`
+    );
+  }
+  return [...lines.slice(0, first + 1), ...lines.slice(last + 1)].join("\n") + text.slice(anchorAt);
+}
+
+/**
+ * Thrown when the region measured on disk and the region recorded in the backup
+ * disagree in length, which means they come from different DSH builds.
+ */
+export class RegionLengthMismatchError extends Error {
+  constructor(measured, backup) {
+    super(
+      `tray region on disk is ${measured} bytes but the backup holds ${backup} bytes; ` +
+        "the backup was taken from a different DSH Desktop build and cannot be restored over this one"
+    );
+    this.name = "RegionLengthMismatchError";
+    this.measured = measured;
+    this.backup = backup;
   }
 }
 
@@ -130,12 +188,7 @@ export function patchDesktopMain(main) {
   // Reclaim the comments first: without the space they free, the restart item
   // never fits, and the region length is the hard constraint.
   let reclaimed = region;
-  for (const comment of RECLAIMED_COMMENTS) {
-    if (!reclaimed.includes(comment)) {
-      throw new UnsupportedBuildError("tray region comments do not match the expected layout");
-    }
-    reclaimed = reclaimed.replace(comment, "");
-  }
+  for (const target of RECLAIMED_COMMENTS) reclaimed = dropCommentAbove(reclaimed, target);
 
   // The marker goes inside the region, right after the start marker line, so a
   // later run finds it in the same slice this function inspects.
@@ -202,6 +255,16 @@ export function restoreDesktopMain(main, stockRegion = Buffer.from(STOCK_TRAY_RE
   // rewriting a region that may belong to a newer DSH release.
   if (!region.includes(PATCH_MARKER)) {
     return { changed: false, source: main, regionStart, regionLength };
+  }
+
+  // A patched region always ends with "//#endregion" followed by space padding
+  // out to the stock length. If the backup's length does not land on that
+  // boundary, the backup came from a different DSH build and writing it would
+  // splice an unrelated region over this one. Refuse instead of guessing.
+  const measured = locateRegion(main).length;
+  const padding = region.slice(measured);
+  if (measured > regionLength || !/^ *$/.test(padding)) {
+    throw new RegionLengthMismatchError(measured, regionLength);
   }
 
   // The backup region is written verbatim; only a shorter region is padded.

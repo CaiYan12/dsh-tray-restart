@@ -4,7 +4,12 @@ import { spawnSync } from "node:child_process";
 import { writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadStockMain, fixtureSkip } from "./fixture.js";
+import {
+  STOCK_REGION_LENGTH,
+  STOCK_REGION_START,
+  fixtureSkip,
+  loadStockMain
+} from "./fixture.js";
 import { patchDesktopMain, restoreDesktopMain, PATCH_MARKER } from "../src/patch.js";
 
 const skip = fixtureSkip();
@@ -14,8 +19,8 @@ test("restoreDesktopMain reports the stock region location", { skip }, () => {
   const patched = patchDesktopMain(main);
   const result = restoreDesktopMain(patched.source);
   assert.equal(result.changed, true);
-  assert.equal(result.regionStart, 779389);
-  assert.equal(result.regionLength, 1254);
+  assert.equal(result.regionStart, STOCK_REGION_START);
+  assert.equal(result.regionLength, STOCK_REGION_LENGTH);
 });
 
 test("a patched region is restored to the stock region byte for byte", { skip }, () => {
@@ -75,6 +80,38 @@ test("the restored lib/main.js passes node --check", { skip }, () => {
   } finally {
     rmSync(file, { force: true });
   }
+});
+
+test("a backup region of a different length is refused instead of spliced in", { skip }, () => {
+  const main = loadStockMain();
+  const patched = patchDesktopMain(main);
+  // A backup taken from another DSH build: shorter than the region the patched
+  // file actually carries, so its end does not land on the region boundary.
+  // Restoring it would splice an unrelated region over this one, so the restore
+  // must refuse rather than guess.
+  // It still carries the marker, so the restore reaches the length check rather
+  // than treating the region as never patched.
+  const shorter = Buffer.from(
+    `//#region lib/types/tray.js\n${PATCH_MARKER}\n//#endregion\n`,
+    "utf8"
+  );
+  assert.throws(
+    () => restoreDesktopMain(patched.source, shorter),
+    (error) => {
+      assert.equal(error.name, "RegionLengthMismatchError");
+      assert.match(error.message, /different DSH Desktop build/);
+      return true;
+    }
+  );
+});
+
+test("a backup region of the right length is accepted", { skip }, () => {
+  const main = loadStockMain();
+  const patched = patchDesktopMain(main);
+  const stockRegion = main.subarray(STOCK_REGION_START, STOCK_REGION_START + STOCK_REGION_LENGTH);
+  const result = restoreDesktopMain(patched.source, stockRegion);
+  assert.equal(result.changed, true);
+  assert.ok(result.source.equals(main));
 });
 
 test("a source with no tray region throws instead of returning source", () => {

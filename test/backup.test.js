@@ -11,6 +11,7 @@ import {
   readBackup,
   writeBackup
 } from "../src/backup.js";
+import { STOCK_REGION_START } from "./fixture.js";
 
 function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
@@ -45,7 +46,7 @@ test("writeBackup stores the region bytes and a JSON sidecar", (t) => {
   const dir = tempBackupDir(t);
   const result = writeBackup({
     region: REGION,
-    regionStart: 779389,
+    regionStart: STOCK_REGION_START,
     dshVersion: "0.2.2-rc.3",
     asarPath: "C:\\tmp\\app.asar"
   });
@@ -55,7 +56,7 @@ test("writeBackup stores the region bytes and a JSON sidecar", (t) => {
   const files = readFileSync(result.metaFile);
   const meta = JSON.parse(files.toString("utf8"));
   assert.equal(meta.dshVersion, "0.2.2-rc.3");
-  assert.equal(meta.regionStart, 779389);
+  assert.equal(meta.regionStart, STOCK_REGION_START);
   assert.equal(meta.regionLength, REGION.length);
   assert.equal(meta.sha256, sha256(REGION));
   assert.equal(meta.asarPath, "C:\\tmp\\app.asar");
@@ -66,7 +67,7 @@ test("writeBackup stores the region bytes and a JSON sidecar", (t) => {
 
 test("readBackup returns the stored region and its metadata", (t) => {
   tempBackupDir(t);
-  writeBackup({ region: REGION, regionStart: 779389, dshVersion: "0.2.2-rc.3" });
+  writeBackup({ region: REGION, regionStart: STOCK_REGION_START, dshVersion: "0.2.2-rc.3" });
   const backup = readBackup();
   assert.ok(backup.region.equals(REGION));
   assert.equal(backup.meta.sha256, sha256(REGION));
@@ -75,7 +76,7 @@ test("readBackup returns the stored region and its metadata", (t) => {
 
 test("a second writeBackup does not overwrite the first backup", (t) => {
   tempBackupDir(t);
-  writeBackup({ region: REGION, regionStart: 779389, dshVersion: "0.2.2-rc.3" });
+  writeBackup({ region: REGION, regionStart: STOCK_REGION_START, dshVersion: "0.2.2-rc.3" });
   const other = Buffer.from("//#region lib/types/tray.js\ndifferent\n//#endregion\n", "utf8");
   const second = writeBackup({ region: other, regionStart: 1, dshVersion: "9.9.9" });
   assert.equal(second.created, false);
@@ -95,7 +96,7 @@ test("readBackup throws a clear error when no backup exists", (t) => {
 
 test("readBackup rejects a backup whose bytes do not match the recorded SHA-256", (t) => {
   const dir = tempBackupDir(t);
-  const result = writeBackup({ region: REGION, regionStart: 779389, dshVersion: "0.2.2-rc.3" });
+  const result = writeBackup({ region: REGION, regionStart: STOCK_REGION_START, dshVersion: "0.2.2-rc.3" });
   const meta = JSON.parse(readFileSync(result.metaFile, "utf8"));
   writeFileSync(result.regionFile, Buffer.from("tampered", "utf8"));
   assert.throws(() => readBackup(), (error) => {

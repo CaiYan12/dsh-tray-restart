@@ -1,10 +1,19 @@
 import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadStockMain, fixtureSkip, repoRoot } from "./fixture.js";
+import {
+  MAIN_PATH,
+  STOCK_MAIN_BYTES,
+  STOCK_REGION_LENGTH,
+  STOCK_REGION_START,
+  asarSkip,
+  repoRoot,
+  sandboxAsar,
+  tempDir
+} from "./fixture.js";
 import { PATCH_MARKER } from "../src/patch.js";
 import { applyTrayRestart } from "../src/asar.js";
 import { BACKUP_DIR_ENV } from "../src/backup.js";
@@ -12,6 +21,7 @@ import {
   CHECK_EXIT,
   DEFAULT_ASAR_PATH,
   asarPathFromArgs,
+  asarPathFromExecPath,
   checkExitCode,
   formatCheckReport,
   formatRestoreReport,
@@ -23,10 +33,7 @@ import {
  * the backup directory is redirected with DSH_TRAY_RESTART_BACKUP_DIR so the
  * real ~/.dsh/tray-restart-backup is never touched.
  */
-const REAL_ASAR = process.env.DSH_TRAY_ASAR
-  ?? "D:\\Program Files\\Deepseek\\resources\\app.asar";
-
-const skip = fixtureSkip() || (existsSync(REAL_ASAR) ? false : `[asar-missing] ${REAL_ASAR}`);
+const skip = asarSkip();
 
 /** @type {string} */
 let workRoot;
@@ -34,17 +41,12 @@ let previousBackupEnv;
 
 /** A fresh asar copy plus a fresh, empty backup directory under the temp root. */
 function sandbox() {
-  const dir = mkdtempSync(join(workRoot, "case-"));
-  const asarCopy = join(dir, "app.asar");
-  copyFileSync(REAL_ASAR, asarCopy);
-  const backup = join(dir, "backup");
-  process.env[BACKUP_DIR_ENV] = backup;
-  return { dir, asarCopy, backup };
+  return sandboxAsar(workRoot);
 }
 
 before(() => {
   if (skip) return;
-  workRoot = mkdtempSync(join(tmpdir(), "dsh-tray-restart-install-status-"));
+  workRoot = tempDir("dsh-tray-restart-install-status-");
   previousBackupEnv = process.env[BACKUP_DIR_ENV];
 });
 
@@ -64,9 +66,9 @@ test("a stock asar reports not patched with the version and region range", { ski
   assert.equal(status.asarPath, asarCopy);
   assert.equal(status.patched, false);
   assert.equal(status.dshVersion, "0.2.2-rc.3");
-  assert.equal(status.regionStart, 779389);
-  assert.equal(status.regionLength, 1254);
-  assert.equal(status.regionEnd, 779389 + 1254);
+  assert.equal(status.regionStart, STOCK_REGION_START);
+  assert.equal(status.regionLength, STOCK_REGION_LENGTH);
+  assert.equal(status.regionEnd, STOCK_REGION_START + STOCK_REGION_LENGTH);
   assert.equal(status.backup.exists, false);
 });
 
@@ -76,10 +78,10 @@ test("a patched asar reports patched and keeps the region range", { skip }, () =
   const status = readInstallStatus(asarCopy);
 
   assert.equal(status.patched, true);
-  assert.equal(status.regionStart, 779389);
-  assert.equal(status.regionLength, 1254);
+  assert.equal(status.regionStart, STOCK_REGION_START);
+  assert.equal(status.regionLength, STOCK_REGION_LENGTH);
   assert.equal(status.backup.exists, true);
-  assert.equal(status.backup.meta.regionStart, 779389);
+  assert.equal(status.backup.meta.regionStart, STOCK_REGION_START);
   assert.match(status.backup.meta.sha256, /^[0-9a-f]{64}$/);
 });
 
@@ -129,16 +131,16 @@ test("the check report names the asar, the version, the state and the region", (
     asarPath: "C:\\x\\app.asar",
     dshVersion: "0.2.2-rc.3",
     patched: false,
-    regionStart: 779389,
-    regionLength: 1254,
-    regionEnd: 780643,
+    regionStart: STOCK_REGION_START,
+    regionLength: STOCK_REGION_LENGTH,
+    regionEnd: STOCK_REGION_START + STOCK_REGION_LENGTH,
     backup: { exists: false, dir: "C:\\x\\backup" }
   });
   assert.match(text, /C:\\x\\app\.asar/);
   assert.match(text, /0\.2\.2-rc\.3/);
   assert.match(text, /not patched/i);
-  assert.match(text, /779389/);
-  assert.match(text, /1254/);
+  assert.match(text, new RegExp(String(STOCK_REGION_START)));
+  assert.match(text, new RegExp(String(STOCK_REGION_LENGTH)));
   assert.match(text, /no backup/i);
 });
 
@@ -148,16 +150,16 @@ test("the check report says patched and prints the backup metadata", () => {
     asarPath: "C:\\x\\app.asar",
     dshVersion: "0.2.2-rc.3",
     patched: true,
-    regionStart: 779389,
-    regionLength: 1254,
-    regionEnd: 780643,
+    regionStart: STOCK_REGION_START,
+    regionLength: STOCK_REGION_LENGTH,
+    regionEnd: STOCK_REGION_START + STOCK_REGION_LENGTH,
     backup: {
       exists: true,
       dir: "C:\\x\\backup",
       meta: {
         dshVersion: "0.2.2-rc.3",
-        regionStart: 779389,
-        regionLength: 1254,
+        regionStart: STOCK_REGION_START,
+        regionLength: STOCK_REGION_LENGTH,
         sha256: "a".repeat(64),
         createdAt: "2026-11-14T00:00:00.000Z"
       }
@@ -177,13 +179,13 @@ test("the check report says the asar is missing", () => {
 // ── formatRestoreReport ───────────────────────────────────────────────────
 
 test("the restore report says restored when the region changed", () => {
-  const text = formatRestoreReport({ changed: true, asarPath: "C:\\x\\app.asar", backupUsed: true, mainBytes: 848505 });
+  const text = formatRestoreReport({ changed: true, asarPath: "C:\\x\\app.asar", backupUsed: true, mainBytes: STOCK_MAIN_BYTES });
   assert.match(text, /restored/i);
   assert.match(text, /C:\\x\\app\.asar/);
 });
 
 test("the restore report says already stock when nothing changed", () => {
-  const text = formatRestoreReport({ changed: false, asarPath: "C:\\x\\app.asar", backupUsed: false, mainBytes: 848505 });
+  const text = formatRestoreReport({ changed: false, asarPath: "C:\\x\\app.asar", backupUsed: false, mainBytes: STOCK_MAIN_BYTES });
   assert.match(text, /already stock/i);
 });
 

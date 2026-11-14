@@ -90,9 +90,12 @@ marker, asar integrity-hash rewrite, and a manual restore script. Prior art:
 npm test        # node --test test/
 ```
 
-The asar tests read the stock `lib/main.js` fixture from
-`D:\Dev\dsh-tray-restart-shared\fixtures\main-stock.js` (override with
-`DSH_TRAY_FIXTURE`) and copy the installed asar before touching it.
+The asar tests read the stock `lib/main.js` fixture from `DSH_TRAY_FIXTURE`
+and the installed asar from `DSH_TRAY_ASAR`. Neither has a default: this
+repository commits neither the 848505-byte fixture nor any machine's install
+path, so the dependent tests skip with a message naming the missing variable
+when the two are unset. Tests only ever copy the installed asar; nothing writes
+to the real one.
 
 ## Conventions
 

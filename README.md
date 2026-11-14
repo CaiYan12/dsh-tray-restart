@@ -47,8 +47,8 @@ asar integrity record is rewritten to match. See
 
 ## Install
 
-1. Make sure DSH Desktop is installed. On this machine the asar lives at
-   `D:\Program Files\Deepseek\resources\app.asar`.
+1. Make sure DSH Desktop is installed. The asar lives at
+   `<install dir>\resources\app.asar`, next to the desktop executable.
 2. Link the package into the desktop profile, the same way as the other local
    plugins:
 
@@ -163,6 +163,25 @@ npm run check:install    # print the current install state
 npm run restore:install  # restore the stock tray region
 ```
 
+### Running the full test suite
+
+The unit tests run everywhere. The suites that read a real DSH build are
+skipped unless two environment variables point at one — this repository does
+not commit the 848505-byte `lib/main.js` fixture or any install path, so both
+are supplied per machine:
+
+```sh
+# A copy of lib/main.js extracted from resources/app.asar
+export DSH_TRAY_FIXTURE=/path/to/main-stock.js
+# The installed asar the integration suites copy (never written in place)
+export DSH_TRAY_ASAR=/path/to/resources/app.asar
+
+npm test
+```
+
+With both set the whole suite runs; without them the dependent tests are
+skipped with a message naming the variable that is missing, and nothing fails.
+
 Both scripts accept an explicit asar path, and honour
 `DSH_DESKTOP_APP_ASAR`:
 
@@ -174,10 +193,15 @@ node scripts/check-install.mjs "C:/path/to/resources/app.asar"
 missing or unreadable. `restore:install` exit codes: `0` restored or already
 stock, `1` restore failed, `2` the asar is missing or unreadable.
 
-The asar tests read the stock `lib/main.js` fixture from
-`D:\Dev\dsh-tray-restart-shared\fixtures\main-stock.js` (override with
-`DSH_TRAY_FIXTURE`) and always work on a temporary copy of the installed asar —
-no test writes to the real `app.asar` or to `~/.dsh/tray-restart-backup`.
+The asar tests read the stock `lib/main.js` fixture from `DSH_TRAY_FIXTURE`
+and the installed asar from `DSH_TRAY_ASAR` (see
+[Running the full test suite](#running-the-full-test-suite)), and always work on
+a temporary copy of the installed asar — no test writes to the real `app.asar`
+or to `~/.dsh/tray-restart-backup`.
+
+The scripts derive their default asar path from the running executable
+(`resources/app.asar` beside `process.execPath`), the same rule the Host entry
+uses. Pass an explicit path or `DSH_DESKTOP_APP_ASAR` when Node lives elsewhere.
 
 ## References
 

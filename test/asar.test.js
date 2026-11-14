@@ -1,80 +1,43 @@
 import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
-import {
-  copyFileSync,
-  existsSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  statSync
-} from "node:fs";
-import { tmpdir } from "node:os";
+import { spawnSync } from "node:child_process";
+import { copyFileSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { loadStockMain, fixtureSkip } from "./fixture.js";
+import {
+  MAIN_PATH,
+  REAL_ASAR_PATH,
+  REGION_START_MARKER,
+  STOCK_ASAR_BYTES,
+  asarSkip,
+  loadStockMain,
+  nodeAt,
+  readEntry,
+  readHeader,
+  sha256,
+  tempDir
+} from "./fixture.js";
 import { PATCH_MARKER, STOCK_TRAY_REGION } from "../src/patch.js";
 import { applyTrayRestart, restoreTrayRestart } from "../src/asar.js";
 import { BACKUP_DIR_ENV } from "../src/backup.js";
 
 /**
- * Path of the installed DSH Desktop asar. Only ever read: every test that
- * writes works on a temporary copy made once in `before`.
+ * The installed asar. Only ever read: every test that writes works on a
+ * temporary copy made once in `before`.
  */
-const REAL_ASAR = process.env.DSH_TRAY_ASAR
-  ?? "D:\\Program Files\\Deepseek\\resources\\app.asar";
-
-const skip = fixtureSkip() || (existsSync(REAL_ASAR) ? false : `[asar-missing] ${REAL_ASAR}`);
-
-const MAIN_PATH = ["lib", "main.js"];
-const REGION_START_MARKER = "//#region lib/types/tray.js";
+const skip = asarSkip();
 
 /** @type {string} */
 let workDir;
 /** @type {string} */
 let asarCopy;
 let stockMain;
-
-/** Read the asar header: data offset, JSON size and the parsed tree. */
-function readHeader(buf) {
-  const pickleSize = buf.readUInt32LE(4);
-  const jsonSize = buf.readUInt32LE(12);
-  const dataOffset = 8 + pickleSize;
-  const header = JSON.parse(buf.subarray(16, 16 + jsonSize).toString("utf8"));
-  return { dataOffset, jsonSize, header };
-}
-
-/** Resolve a path inside the header tree. */
-function nodeAt(header, parts) {
-  let node = header;
-  for (const part of parts) node = node.files[part];
-  return node;
-}
-
-/** Absolute byte offset of a file's content inside the asar. */
-function absoluteOffset(buf, parts) {
-  const { dataOffset, header } = readHeader(buf);
-  const node = nodeAt(header, parts);
-  return dataOffset + Number(node.offset);
-}
-
-/** Read one file out of the asar by walking the header from the buffer. */
-function readEntry(buf, parts) {
-  const start = absoluteOffset(buf, parts);
-  const node = nodeAt(readHeader(buf).header, parts);
-  return buf.subarray(start, start + Number(node.size));
-}
-
-function sha256(bytes) {
-  return createHash("sha256").update(bytes).digest("hex");
-}
-
 let previousBackupEnv;
 
 before(() => {
   if (skip) return;
-  workDir = mkdtempSync(join(tmpdir(), "dsh-tray-restart-asar-"));
+  workDir = tempDir("dsh-tray-restart-asar-");
   asarCopy = join(workDir, "app.asar");
-  copyFileSync(REAL_ASAR, asarCopy);
+  copyFileSync(REAL_ASAR_PATH, asarCopy);
   stockMain = loadStockMain();
   // applyTrayRestart writes a backup; keep it inside the temp directory so the
   // real ~/.dsh/tray-restart-backup is never touched by the test suite.
@@ -160,13 +123,11 @@ test("applyTrayRestart keeps every other file readable at its recorded offset", 
   assert.ok(checked >= 2, `expected at least two sample files, checked ${checked}`);
 });
 
-test("the patched asar still parses as an asar and lib/main.js passes node --check", { skip }, async () => {
+test("the patched asar still parses as an asar and lib/main.js passes node --check", { skip }, () => {
   const buf = readFileSync(asarCopy);
   const { header } = readHeader(buf);
   assert.ok(header.files.lib, "header must still parse");
   const main = readEntry(buf, MAIN_PATH);
-  const { spawnSync } = await import("node:child_process");
-  const { writeFileSync } = await import("node:fs");
   const file = join(workDir, "patched-main.js");
   writeFileSync(file, main);
   const check = spawnSync(process.execPath, ["--check", file], { encoding: "utf8" });
@@ -221,8 +182,72 @@ test("a second restoreTrayRestart reports changed false", { skip }, () => {
 });
 
 test("the real installed asar is never modified by the tests", { skip }, () => {
-  const real = readFileSync(REAL_ASAR);
-  assert.equal(real.length, 209021953);
+  const real = readFileSync(REAL_ASAR_PATH);
+  assert.equal(real.length, STOCK_ASAR_BYTES);
   const main = readEntry(real, MAIN_PATH);
   assert.ok(!main.includes(PATCH_MARKER), "the installed asar must still be stock");
+});
+
+// ── the syntax gate: nothing is written unless the candidate parses ───────
+
+test("a candidate that fails the syntax check is refused and the asar is untouched", { skip }, () => {
+  const dir = tempDir("dsh-tray-restart-syntax-");
+  const copy = join(dir, "app.asar");
+  try {
+    copyFileSync(REAL_ASAR_PATH, copy);
+    const before = readFileSync(copy);
+
+    assert.throws(
+      () => applyTrayRestart(copy, { syntaxCheck: () => ({ status: "invalid", detail: "boom" }) }),
+      (error) => {
+        assert.equal(error.name, "SyntaxCheckError");
+        assert.match(error.message, /failed the syntax check/);
+        assert.match(error.message, /boom/);
+        return true;
+      }
+    );
+    assert.ok(readFileSync(copy).equals(before), "a refused patch must not touch the asar");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a syntax check that cannot run is refused rather than skipped", { skip }, () => {
+  const dir = tempDir("dsh-tray-restart-syntax-");
+  const copy = join(dir, "app.asar");
+  try {
+    copyFileSync(REAL_ASAR_PATH, copy);
+    const before = readFileSync(copy);
+
+    assert.throws(
+      () => applyTrayRestart(copy, {
+        syntaxCheck: () => ({ status: "unavailable", detail: "no node executable" })
+      }),
+      (error) => {
+        assert.equal(error.name, "SyntaxCheckError");
+        assert.match(error.message, /could not run/);
+        assert.match(error.message, /refusing to write/);
+        return true;
+      }
+    );
+    assert.ok(readFileSync(copy).equals(before), "an unverified patch must not touch the asar");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the real syntax gate accepts the real patch", { skip }, () => {
+  const dir = tempDir("dsh-tray-restart-syntax-");
+  const copy = join(dir, "app.asar");
+  const previous = process.env[BACKUP_DIR_ENV];
+  process.env[BACKUP_DIR_ENV] = join(dir, "backup");
+  try {
+    copyFileSync(REAL_ASAR_PATH, copy);
+    const result = applyTrayRestart(copy);
+    assert.equal(result.changed, true);
+  } finally {
+    if (previous === undefined) delete process.env[BACKUP_DIR_ENV];
+    else process.env[BACKUP_DIR_ENV] = previous;
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

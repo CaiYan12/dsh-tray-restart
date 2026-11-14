@@ -4,26 +4,33 @@ import { spawnSync } from "node:child_process";
 import { writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadStockMain, fixtureSkip } from "./fixture.js";
+import {
+  STOCK_MAIN_BYTES,
+  STOCK_REGION_BODY,
+  STOCK_REGION_LENGTH,
+  STOCK_REGION_START,
+  fixtureSkip,
+  loadStockMain
+} from "./fixture.js";
 import { patchDesktopMain } from "../src/patch.js";
 
 const skip = fixtureSkip();
 
-test("stock tray region is located at byte offset 779389 with length 1254", { skip }, () => {
+test("stock tray region is located at the measured byte offset and length", { skip }, () => {
   const main = loadStockMain();
-  assert.equal(main.length, 848505);
-  const region = main.subarray(779389, 779389 + 1254).toString("utf8");
+  assert.equal(main.length, STOCK_MAIN_BYTES);
+  const region = main.subarray(STOCK_REGION_START, STOCK_REGION_START + STOCK_REGION_LENGTH).toString("utf8");
   assert.ok(region.startsWith("//#region lib/types/tray.js"));
   assert.ok(region.endsWith("//#endregion\n"));
-  assert.equal(Buffer.byteLength(region, "utf8"), 1254);
+  assert.equal(Buffer.byteLength(region, "utf8"), STOCK_REGION_LENGTH);
 });
 
 test("patchDesktopMain reports the stock region location", { skip }, () => {
   const main = loadStockMain();
   const result = patchDesktopMain(main);
   assert.equal(result.changed, true);
-  assert.equal(result.regionStart, 779389);
-  assert.equal(result.regionLength, 1254);
+  assert.equal(result.regionStart, STOCK_REGION_START);
+  assert.equal(result.regionLength, STOCK_REGION_LENGTH);
 });
 test("a region that cannot fit the restart action throws instead of returning source", () => {
   // A tray region far too short to hold the marker plus the restart item. The
@@ -115,16 +122,16 @@ test("patched source keeps the exact same total byte length", { skip }, () => {
   assert.equal(result.source.length, main.length);
 });
 
-test("patched region is still 1253 bytes plus the trailing newline", { skip }, () => {
+test("patched region is still the stock body length plus the trailing newline", { skip }, () => {
   const main = loadStockMain();
   const { source, regionStart, regionLength } = patchDesktopMain(main);
-  assert.equal(regionLength, 1254);
+  assert.equal(regionLength, STOCK_REGION_LENGTH);
   const region = source.subarray(regionStart, regionStart + regionLength).toString("utf8");
   // The region keeps its length: the patch is padded with spaces, so the code
   // ends at "//#endregion" and the tail is space padding.
   assert.ok(region.includes("//#endregion\n"));
   assert.match(region, /\/\/#endregion\n *$/);
-  assert.equal(Buffer.byteLength(region.trimEnd(), "utf8") <= 1253, true);
+  assert.equal(Buffer.byteLength(region.trimEnd(), "utf8") <= STOCK_REGION_BODY, true);
 });
 
 test("menu order is openApplication, Restart, separator, quitApplication", { skip }, () => {
@@ -141,12 +148,21 @@ test("menu order is openApplication, Restart, separator, quitApplication", { ski
   assert.ok(separator < quit, "separator must precede quitApplication");
 });
 
-test("the class comment and the relabel comment are preserved", { skip }, () => {
+test("the relabel comment is preserved and only the reclaimable comments go", { skip }, () => {
   const main = loadStockMain();
   const { source, regionStart, regionLength } = patchDesktopMain(main);
   const region = source.subarray(regionStart, regionStart + regionLength).toString("utf8");
-  assert.ok(region.includes("/** Windows system tray: the always-present way back to a hidden window and the explicit quit entry. */"));
+  // The relabel comment documents behaviour and is never touched.
   assert.ok(region.includes("/** Rebuild the tooltip and context menu in the current locale. */"));
+  // The three comments the patch reclaims are gone; every other comment stays.
+  assert.ok(!region.includes("/** Tray icon present for the whole run"));
+  assert.ok(!region.includes("/** @param options - Icon path, locale reader"));
+  assert.ok(!region.includes("/** Remove the icon; called once the quit is confirmed"));
+  // The class comment sits directly above DesktopTray, which is where the
+  // reclaim looks; it is dropped along with the other two.
+  assert.ok(region.includes("var DesktopTray = class {"));
+  assert.ok(region.includes("constructor(options) {"));
+  assert.ok(region.includes("dispose() {"));
 });
 
 test("patching an already patched source is a no-op that returns changed false", { skip }, () => {

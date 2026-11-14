@@ -19,8 +19,28 @@ import { backupDir, readBackup } from "../src/backup.js";
 /** Environment variable that points the scripts at a specific asar. */
 export const ASAR_ENV = "DSH_DESKTOP_APP_ASAR";
 
-/** The installed asar on this machine, used when neither argument nor environment says otherwise. */
-export const DEFAULT_ASAR_PATH = "D:\\Program Files\\Deepseek\\resources\\app.asar";
+/**
+ * `resources/app.asar` beside a running executable.
+ *
+ * This is the same rule the Host entry uses, so the scripts and the plugin always
+ * agree on which asar they mean. It is derived rather than hardcoded: an install
+ * directory is a property of one machine, not of this repository.
+ *
+ * @param {string} execPath the executable to derive from, normally `process.execPath`.
+ * @returns {string}
+ */
+export function asarPathFromExecPath(execPath) {
+  return join(dirname(execPath), "resources", "app.asar");
+}
+
+/**
+ * The asar the scripts fall back to when neither an argument nor the environment
+ * names one: `resources/app.asar` beside the running Node executable.
+ *
+ * Run the scripts with the desktop app's own executable (`DSH_DESKTOP_APP_ASAR`
+ * or an explicit argument) when Node lives somewhere else, as it usually does.
+ */
+export const DEFAULT_ASAR_PATH = asarPathFromExecPath(process.execPath);
 
 /** Byte string that opens the tray region inside `lib/main.js`. */
 const REGION_START_MARKER = "//#region lib/types/tray.js";
@@ -285,4 +305,4 @@ export function formatRestoreReport(result) {
   return lines.join("\n");
 }
 
-export { dirname, join };
+

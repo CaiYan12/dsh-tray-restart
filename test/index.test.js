@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -8,9 +8,13 @@ import {
   apply,
   asarPathFrom,
   describeResult,
+  DSH_RANGE,
   notificationBody,
-  shouldPatch
+  notificationCopy,
+  shouldPatch,
+  versionSupported
 } from "../src/index.js";
+import { STOCK_MAIN_BYTES, repoRoot } from "./fixture.js";
 
 /**
  * Minimal stand-in for the Cordis context the Host hands to a plugin.
@@ -40,12 +44,16 @@ function deps(overrides = {}) {
     asarExists: () => true,
     applyTrayRestart: (path) => {
       calls.applyTrayRestart.push(path);
-      return { changed: true, asarPath: path, mainBytes: 848505, integrityUpdated: true, backupCreated: true, backupUsed: false };
+      return { changed: true, asarPath: path, mainBytes: STOCK_MAIN_BYTES, integrityUpdated: true, backupCreated: true, backupUsed: false };
     },
     notify: (message) => {
       calls.notify.push(message);
       return true;
     },
+    // The version gate runs before the patch: these tests exercise the patch
+    // path, so they report a supported version unless a case overrides it.
+    readVersion: () => "0.2.2-rc.3",
+    supportedRange: ">=0.2.2-rc.3 <0.3.0",
     ...overrides
   };
   return { value, calls };
@@ -92,15 +100,15 @@ test("asarPathFrom ignores an empty override", () => {
 // ── describeResult: log line per outcome ───────────────────────────────────
 
 test("describeResult reports a fresh patch as info with the restart hint", () => {
-  const line = describeResult({ changed: true, mainBytes: 848505, integrityUpdated: true });
+  const line = describeResult({ changed: true, mainBytes: STOCK_MAIN_BYTES, integrityUpdated: true });
   assert.equal(line.level, "info");
-  assert.match(line.message, /848505/);
+  assert.match(line.message, new RegExp(String(STOCK_MAIN_BYTES)));
   assert.match(line.message, /integrity/);
   assert.match(line.message, /restart/i);
 });
 
 test("describeResult reports an already patched asar as info without a restart hint", () => {
-  const line = describeResult({ changed: false, mainBytes: 848505, integrityUpdated: false });
+  const line = describeResult({ changed: false, mainBytes: STOCK_MAIN_BYTES, integrityUpdated: false });
   assert.equal(line.level, "info");
   assert.match(line.message, /already/i);
   assert.doesNotMatch(line.message, /restart the desktop app/i);
@@ -142,7 +150,7 @@ test("apply logs info and shows no notification when the asar is already patched
   const { value, calls } = deps({
     applyTrayRestart: (path) => {
       calls.applyTrayRestart.push(path);
-      return { changed: false, asarPath: path, mainBytes: 848505, integrityUpdated: false, backupCreated: false, backupUsed: false };
+      return { changed: false, asarPath: path, mainBytes: STOCK_MAIN_BYTES, integrityUpdated: false, backupCreated: false, backupUsed: false };
     }
   });
   await apply(ctx, value);
@@ -243,4 +251,110 @@ test("APPLY_DEFAULTS exposes the platform and asar path the Host entry uses", ()
   assert.equal(typeof APPLY_DEFAULTS.platform, "string");
   assert.equal(typeof APPLY_DEFAULTS.asarPath, "string");
   assert.equal(APPLY_DEFAULTS.asarPath.endsWith("app.asar"), true);
+});
+// ── describeResult: the parenthetical is always closed ────────────────────
+
+test("describeResult closes the bracket when only the byte count is known", () => {
+  const line = describeResult({ changed: true, mainBytes: STOCK_MAIN_BYTES, integrityUpdated: false });
+  assert.match(line.message, /\(\d+ bytes\)/);
+  assert.equal(
+    (line.message.match(/\(/g) ?? []).length,
+    (line.message.match(/\)/g) ?? []).length,
+    "every opening bracket is closed"
+  );
+});
+
+test("describeResult closes the bracket when only integrity is known", () => {
+  const line = describeResult({ changed: true, integrityUpdated: true });
+  assert.match(line.message, /\(integrity updated\)/);
+  assert.equal((line.message.match(/\(/g) ?? []).length, (line.message.match(/\)/g) ?? []).length);
+});
+
+test("describeResult omits the bracket entirely when nothing is known", () => {
+  const line = describeResult({ changed: true });
+  assert.doesNotMatch(line.message, /\(/);
+  assert.match(line.message, /restart the desktop app/i);
+});
+
+// ── notificationCopy: the copy comes from locale/{en,zh}.json ─────────────
+
+test("the bubble copy is read from the locale files, not the code", () => {
+  for (const language of ["en", "zh"]) {
+    const file = JSON.parse(readFileSync(join(repoRoot, "locale", `${language}.json`), "utf8"));
+    const copy = notificationCopy(language);
+    assert.equal(copy.title, file.notification.title, `${language} title`);
+    assert.equal(copy.body, file.notification.body, `${language} body`);
+  }
+});
+
+test("notificationCopy resolves regional and underscored locale ids", () => {
+  assert.equal(notificationCopy("zh-CN").body, notificationCopy("zh").body);
+  assert.equal(notificationCopy("zh_Hans").body, notificationCopy("zh").body);
+  assert.equal(notificationCopy("EN-gb").body, notificationCopy("en").body);
+});
+
+test("notificationCopy falls back to English for an unknown language", () => {
+  assert.deepEqual(notificationCopy("xx"), notificationCopy("en"));
+});
+
+// ── versionSupported: the engines.dsh gate ────────────────────────────────
+
+test("versionSupported accepts the measured build and rejects other ranges", () => {
+  assert.equal(versionSupported("0.2.2-rc.3", DSH_RANGE).supported, true);
+  assert.equal(versionSupported("0.2.5", DSH_RANGE).supported, true);
+  assert.equal(versionSupported("0.3.0", DSH_RANGE).supported, false);
+  assert.equal(versionSupported("0.2.2-rc.2", DSH_RANGE).supported, false);
+});
+
+test("versionSupported reports why an unsupported version is refused", () => {
+  const outOfRange = versionSupported("0.3.0", DSH_RANGE);
+  assert.equal(outOfRange.reason, "out-of-range");
+  assert.match(outOfRange.message, /0\.3\.0/);
+  assert.match(outOfRange.message, /supported range/);
+
+  const unknown = versionSupported(null, DSH_RANGE);
+  assert.equal(unknown.reason, "unknown-version");
+  assert.equal(unknown.supported, false);
+});
+
+test("DSH_RANGE is the range the manifest declares", () => {
+  const manifest = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8"));
+  assert.equal(DSH_RANGE, manifest.engines.dsh);
+});
+
+// ── apply: the version gate blocks the patch ──────────────────────────────
+
+test("apply refuses to patch a DSH version outside the supported range", async () => {
+  const ctx = fakeCtx();
+  const { value, calls } = deps({
+    readVersion: () => "0.9.0",
+    applyTrayRestart: (path) => {
+      calls.applyTrayRestart.push(path);
+      return { changed: true };
+    }
+  });
+  await apply(ctx, value);
+
+  assert.deepEqual(calls.applyTrayRestart, [], "the patch must not run");
+  assert.equal(calls.notify.length, 0);
+  assert.equal(ctx.lines.length, 1);
+  assert.equal(ctx.lines[0].level, "warn");
+  assert.match(ctx.lines[0].message, /0\.9\.0/);
+  assert.match(ctx.lines[0].message, /not patched/);
+});
+
+test("apply refuses to patch when the DSH version cannot be read", async () => {
+  const ctx = fakeCtx();
+  const { value, calls } = deps({
+    readVersion: () => null,
+    applyTrayRestart: (path) => {
+      calls.applyTrayRestart.push(path);
+      return { changed: true };
+    }
+  });
+  await apply(ctx, value);
+
+  assert.deepEqual(calls.applyTrayRestart, []);
+  assert.equal(ctx.lines[0].level, "warn");
+  assert.match(ctx.lines[0].message, /could not read the DSH version/);
 });
