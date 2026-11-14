@@ -1,0 +1,41 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+dist/
+build/
+out/
+*.tsbuildinfo
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-error.log*
+logs/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Test / coverage
+coverage/
+.nyc_output/
+
+# Local scratch (issue-tracker local-markdown convention, if ever used)
+.scratch/
+
+# DSH plugin local artifacts
+*.asar.bak
+*.asar.heal.new
+tmp/
