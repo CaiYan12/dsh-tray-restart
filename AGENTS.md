@@ -9,17 +9,19 @@ after installing, removing or upgrading a host plugin.
 Package name: `@local/dsh-tray-restart`. Installed into the desktop profile
 (`~/.dsh/profiles/desktop`) as a local link.
 
-**Current state: implementation in progress.** `src/patch.js` (pure patch
-core), `src/asar.js` (asar I/O), `src/backup.js` (stock-region backup) and
-`src/index.js` (Host plugin entry) exist, with tests under `test/`. Installing
-the bundle into the desktop profile is not done yet.
+**Current state: implemented and installed.** The bundle is linked into the
+desktop profile and the tray menu shows the Restart item. `src/` holds the patch
+core, the asar I/O, the backup, the syntax and version gates, the asar-path
+resolver, and the Host entry; `test/` holds the suites.
 
 ## Target host
 
 - DSH Desktop `0.2.2-rc.3` (`@deepseek-ai/dsh-tools` / `dsh-home-paths` both
   `0.2.2-rc.3`, cordis `4.1.0`).
-- Install directory on this machine: `D:\Program Files\Deepseek\`.
-- `app.asar`: `D:\Program Files\Deepseek\resources\app.asar`.
+- Install directory: whatever `process.execPath` points at. The plugin derives
+  `resources/app.asar` from it, and `src/desktop-asar.js` adds the fallbacks
+  (env var, backup sidecar, uninstall registry) for when the script runs under a
+  plain `node` instead of the desktop executable.
 - Main process file: `lib/main.js` inside the asar.
 - Electron fuses: `EnableEmbeddedAsarIntegrityValidation` **disabled**,
   `OnlyLoadAppFromAsar` disabled, `RunAsNode` enabled.
@@ -52,12 +54,12 @@ long (1254 including the trailing newline) and starts at **byte offset 779389**.
 
 See `docs/research/step1-findings.md` for the full measurement record.
 
-## Planned approach (not yet implemented)
+## Approach
 
 Equal-length in-place patching of the `//#region lib/types/tray.js` …
 `//#endregion` block inside `lib/main.js`, with space padding, an idempotency
-marker, asar integrity-hash rewrite, and a manual restore script. Prior art:
-`maqian1632/dsh-tray-restart`.
+marker, asar integrity-hash rewrite, and a manual restore script. The reasoning
+and the rejected alternatives are in `docs/adr/0001-tray-patch-strategy.md`.
 
 ## Repository layout
 
@@ -87,7 +89,9 @@ marker, asar integrity-hash rewrite, and a manual restore script. Prior art:
 ## Development commands
 
 ```sh
-npm test        # node --test test/
+npm test         # skips the asar suites when the two variables below are unset
+npm run test:strict   # refuses to run without them, and fails on any skip
+npm run check:paths   # no machine-specific absolute paths in tracked files
 ```
 
 The asar tests read the stock `lib/main.js` fixture from `DSH_TRAY_FIXTURE`
@@ -98,6 +102,8 @@ when the two are unset. Tests only ever copy the installed asar; nothing writes
 to the real one.
 
 ## Conventions
+
+Reviewer rules live in `CODING_STANDARDS.md`; mechanical ones are scripts, not prose.
 
 - ES modules, LF line endings, UTF-8, two-space indent.
 - Never commit or push without explicit maintainer approval.

@@ -1,0 +1,26 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # The suites that read a real app.asar need a fixture and an installed
+      # archive; neither can be committed, so CI runs the machine-independent
+      # suites only. The strict script fails instead of skipping, which is what
+      # a developer runs locally with both variables set.
+      - name: Pure suites
+        run: npm test
+
+      - name: No machine-specific paths in tracked files
+        run: node scripts/check-no-machine-paths.mjs

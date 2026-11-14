@@ -148,7 +148,7 @@ export function asarFromRegistryOutput(stdout) {
 
   const icon = fields.get("DisplayIcon");
   if (icon) {
-    // "D:\\Program Files\\Deepseek\\DeepSeek Harness.exe,0" -> the executable.
+    // "<install dir>\\DeepSeek Harness.exe,0" -> the executable.
     const exe = icon.replace(/,\d+$/, "").replace(/^"(.*)"$/, "$1");
     if (isDesktopExecutable(exe)) return asarPathFromExecPath(exe);
   }

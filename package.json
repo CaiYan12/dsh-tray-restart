@@ -21,6 +21,8 @@
   ],
   "scripts": {
     "test": "node --test test/",
+    "test:strict": "node scripts/test-strict.mjs",
+    "check:paths": "node scripts/check-no-machine-paths.mjs",
     "check:install": "node scripts/check-install.mjs",
     "restore:install": "node scripts/restore-install.mjs"
   },

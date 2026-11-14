@@ -81,7 +81,7 @@ asar integrity record is rewritten to match. See
 
    ```
    dsh-tray-restart install status
-     asar: D:\Program Files\Deepseek\resources\app.asar
+     asar: <install dir>/resources/app.asar
      DSH version: 0.2.2-rc.3
      lib/main.js: 848505 bytes
      state: patched (Restart item present)
@@ -112,7 +112,7 @@ The script writes the stock tray region back from the backup, then reports:
 
 ```
 dsh-tray-restart restore
-  asar: D:\Program Files\Deepseek\resources\app.asar
+  asar: <install dir>/resources/app.asar
   state: restored to the stock tray region
   backup used: yes
   lib/main.js: 848505 bytes
