@@ -40,8 +40,13 @@ dataOffset = 8 + u32@4        <- NOT 16 + u32@12
 ```
 
 `lib/main.js` is at `offset 201509551`, `size 848505`, absolute **207179531**.
-The tray region `//#region lib/types/tray.js` … `//#endregion` is **1254 bytes**
-long (including the trailing newline) and starts at **759609**.
+The tray region `//#region lib/types/tray.js` … `//#endregion` is **1253 bytes**
+long (1254 including the trailing newline) and starts at **byte offset 779389**.
+
+> Offsets in this file are **byte** offsets. `lib/main.js` is 848505 bytes but
+> 828725 UTF-16 code units, so a string index is not a byte offset: the same
+> region starts at string index 759609. Patch code must search the Buffer, not
+> the decoded string.
 
 See `docs/research/step1-findings.md` for the full measurement record.
 
