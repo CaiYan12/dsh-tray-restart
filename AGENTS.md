@@ -9,8 +9,10 @@ after installing, removing or upgrading a host plugin.
 Package name: `@local/dsh-tray-restart`. Installed into the desktop profile
 (`~/.dsh/profiles/desktop`) as a local link.
 
-**Current state: pre-implementation.** No `package.json`, no plugin source, no
-tests. Only repository scaffolding exists.
+**Current state: implementation in progress.** `src/patch.js` (pure patch
+core), `src/asar.js` (asar I/O), `src/backup.js` (stock-region backup) and
+`src/index.js` (Host plugin entry) exist, with tests under `test/`. Installing
+the bundle into the desktop profile is not done yet.
 
 ## Target host
 
@@ -84,7 +86,13 @@ marker, asar integrity-hash rewrite, and a manual restore script. Prior art:
 
 ## Development commands
 
-None yet — there is no `package.json`.
+```sh
+npm test        # node --test test/
+```
+
+The asar tests read the stock `lib/main.js` fixture from
+`D:\Dev\dsh-tray-restart-shared\fixtures\main-stock.js` (override with
+`DSH_TRAY_FIXTURE`) and copy the installed asar before touching it.
 
 ## Conventions
 

@@ -1,0 +1,13 @@
+# The dsh-tray-restart bundle patch: one Host plugin row.
+#
+# The plugin patches the packaged Electron shell (lib/main.js inside
+# resources/app.asar) at Host startup so the tray menu gains a Restart item.
+# The patch is equal-length, so the running application's asar offsets stay
+# valid; the new menu item appears after the next desktop restart.
+#
+# `dsh.bundle.platforms` in package.json already restricts the bundle to
+# win32; the entry repeats the platform check so a hand-added row on another
+# platform still exits quietly with an info log.
+- insert:
+    - id: tray-restart
+      name: '@local/dsh-tray-restart'

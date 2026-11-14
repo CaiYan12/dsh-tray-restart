@@ -2,9 +2,9 @@
 
 Self-built DSH (DeepSeek Harness) tray restart plugin.
 
-> **Status: pre-implementation.** This repository currently contains only the
-> project scaffolding produced by `/setup-matt-pocock-skills` and `/init`.
-> No plugin code exists yet.
+> **Status: implementation in progress.** The patch core, asar I/O, backup and
+> the Host plugin entry exist and are covered by `npm test`; the desktop
+> profile install is still to be verified.
 
 ## What it is meant to do
 
