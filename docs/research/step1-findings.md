@@ -49,10 +49,11 @@ dataOffset = 8 + u32@4 = 5669980        ← 正确算法
 
 ### 1.4 托盘区域（实测）
 
-- `//#region lib/types/tray.js` 起始偏移 **759609**（2026-11-14 复核更正；早前记录的 779389 是 Buffer 搜索的 off-by-one 错误，该偏移实际落在 `navigateMain` 函数体内）
-- 区域结束偏移（exclusive）**760863**
-- 区域长度 **1254 字节**（含末尾换行）
+- `//#region lib/types/tray.js` 起始 **字节偏移 779389**（字符串索引 759609；两者差 19780，因为前缀含多字节字符）
+- 区域结束字节偏移（exclusive）**780642**
+- 区域长度 **1253 字节**（1254 含末尾换行）；region 内无多字节字符，字节长 = 字符长
 - `{ type: "separator" }` 在 region 内恰好 1 处，位于 region 相对偏移 927
+- `lib/main.js` 共 848505 字节 / 828725 UTF-16 码元 —— **偏移一律按字节计**
 - 区域内是 `var DesktopTray = class { constructor / relabel / dispose }`
 - 原版菜单三项：`openApplication` → `{ type: "separator" }` → `quitApplication`
 - **原版无重启项**（确认）
