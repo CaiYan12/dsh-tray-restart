@@ -9,8 +9,10 @@ after installing, removing or upgrading a host plugin.
 Package name: `@local/dsh-tray-restart`. Installed into the desktop profile
 (`~/.dsh/profiles/desktop`) as a local link.
 
-**Current state: pre-implementation.** No `package.json`, no plugin source, no
-tests. Only repository scaffolding exists.
+**Current state: implementation in progress.** `src/patch.js` (pure patch
+core), `src/asar.js` (asar I/O), `src/backup.js` (stock-region backup) and
+`src/index.js` (Host plugin entry) exist, with tests under `test/`. Installing
+the bundle into the desktop profile is not done yet.
 
 ## Target host
 
@@ -40,8 +42,13 @@ dataOffset = 8 + u32@4        <- NOT 16 + u32@12
 ```
 
 `lib/main.js` is at `offset 201509551`, `size 848505`, absolute **207179531**.
-The tray region `//#region lib/types/tray.js` … `//#endregion` is **1254 bytes**
-long and starts at **779389**.
+The tray region `//#region lib/types/tray.js` … `//#endregion` is **1253 bytes**
+long (1254 including the trailing newline) and starts at **byte offset 779389**.
+
+> Offsets in this file are **byte** offsets. `lib/main.js` is 848505 bytes but
+> 828725 UTF-16 code units, so a string index is not a byte offset: the same
+> region starts at string index 759609. Patch code must search the Buffer, not
+> the decoded string.
 
 See `docs/research/step1-findings.md` for the full measurement record.
 
@@ -79,7 +86,16 @@ marker, asar integrity-hash rewrite, and a manual restore script. Prior art:
 
 ## Development commands
 
-None yet — there is no `package.json`.
+```sh
+npm test        # node --test test/
+```
+
+The asar tests read the stock `lib/main.js` fixture from `DSH_TRAY_FIXTURE`
+and the installed asar from `DSH_TRAY_ASAR`. Neither has a default: this
+repository commits neither the 848505-byte fixture nor any machine's install
+path, so the dependent tests skip with a message naming the missing variable
+when the two are unset. Tests only ever copy the installed asar; nothing writes
+to the real one.
 
 ## Conventions
 

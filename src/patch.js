@@ -1,0 +1,280 @@
+/**
+ * Equal-length in-place patching of the DSH Desktop tray menu.
+ *
+ * The tray menu is built by `DesktopTray.relabel()` inside the
+ * `//#region lib/types/tray.js` block of the packaged `lib/main.js`. That block
+ * is 1254 bytes long (1253 plus the trailing newline). Everything here operates
+ * on plain bytes: no filesystem access, no asar knowledge. Offsets are byte
+ * offsets, never string indices.
+ */
+
+const REGION_START_MARKER = "//#region lib/types/tray.js";
+const REGION_END_MARKER = "//#endregion";
+const SEPARATOR_ANCHOR = '{ type: "separator" }';
+
+/** Tokens the patch relies on. Any of them missing means an unsupported build. */
+const REQUIRED_TOKENS = ["quitWithoutConfirmation", "app.relaunch()", "restartApplication"];
+
+/** Idempotency marker. Its presence inside the region means the patch is applied. */
+export const PATCH_MARKER =
+  "/* dsh-tray-restart: adds Restart DeepSeek Harness to the tray menu */";
+
+/**
+ * Menu item inserted before the separator.
+ *
+ * Written as one compact line so the whole patch fits the stock region length.
+ */
+const RESTART_ACTION =
+  '\t\t\t{ label: messages.restartApplication + " DeepSeek Harness", ' +
+  "click: () => { app.relaunch(); quitWithoutConfirmation(); } },\n";
+
+/**
+ * Region comments dropped to make room for the restart item.
+ *
+ * The stock region is exactly full: the restart item plus its marker need more
+ * bytes than the region has spare. These three JSDoc comments are the only
+ * reclaimable bytes that carry no behaviour, so removing them keeps every line
+ * of code intact and the file length unchanged. The `relabel()` comment
+ * documents behaviour and is deliberately kept.
+ *
+ * Each entry names the code the comment documents rather than the comment text,
+ * so a reworded comment on a supported build is still reclaimed: the whole line
+ * is dropped when it is a JSDoc line (or a run of them) directly above that code.
+ * Only the comment wording would change in a reword, not the declaration.
+ */
+const RECLAIMED_COMMENTS = [
+  { above: "var DesktopTray = class {", why: "the class-level JSDoc" },
+  { above: "\tconstructor(options) {", why: "the constructor JSDoc" },
+  { above: "\tdispose() {", why: "the dispose JSDoc" }
+];
+
+/** Thrown when the build does not look like a supported DSH Desktop release. */
+export class UnsupportedBuildError extends Error {
+  constructor(reason) {
+    super(`unsupported DSH Desktop build: ${reason}`);
+    this.name = "UnsupportedBuildError";
+  }
+}
+
+/**
+ * Drop the JSDoc line (or run of lines) directly above `anchor`.
+ *
+ * Matching on the anchor instead of the comment text keeps the reclaim working
+ * when DSH rewords a comment, which carries no behaviour and is not part of the
+ * contract this patch relies on. The error still names the region and the
+ * declaration, so a genuine layout change is diagnosable.
+ *
+ * @param {string} text the tray region.
+ * @param {{ above: string, why: string }} target
+ * @returns {string}
+ */
+function dropCommentAbove(text, target) {
+  const anchorAt = text.indexOf(target.above);
+  if (anchorAt === -1) {
+    throw new UnsupportedBuildError(
+      `tray region no longer contains "${target.above.trim()}"; ` +
+        `the stock region layout changed and ${target.why} cannot be reclaimed`
+    );
+  }
+  // The anchor sits at the start of its line, so the text before it ends with
+  // that line's own newline: the last split segment is empty and the comment
+  // run starts one segment earlier.
+  const lines = text.slice(0, anchorAt).split("\n");
+  let last = lines.length - 1;
+  while (last >= 0 && lines[last] === "") last -= 1;
+  let first = last;
+  while (first >= 0 && /^\s*\/\*\*.*\*\/\s*$/.test(lines[first])) first -= 1;
+  if (first === last) {
+    throw new UnsupportedBuildError(
+      `tray region has no JSDoc line above "${target.above.trim()}"; ` +
+        `the stock region comment wording changed and ${target.why} cannot be reclaimed`
+    );
+  }
+  return [...lines.slice(0, first + 1), ...lines.slice(last + 1)].join("\n") + text.slice(anchorAt);
+}
+
+/**
+ * Thrown when the region measured on disk and the region recorded in the backup
+ * disagree in length, which means they come from different DSH builds.
+ */
+export class RegionLengthMismatchError extends Error {
+  constructor(measured, backup) {
+    super(
+      `tray region on disk is ${measured} bytes but the backup holds ${backup} bytes; ` +
+        "the backup was taken from a different DSH Desktop build and cannot be restored over this one"
+    );
+    this.name = "RegionLengthMismatchError";
+    this.measured = measured;
+    this.backup = backup;
+  }
+}
+
+/** Thrown when the patched region would not fit in the stock region length. */
+export class RegionOverflowError extends Error {
+  constructor(needed, available) {
+    super(`patched tray region needs ${needed} bytes but only ${available} are available`);
+    this.name = "RegionOverflowError";
+    this.needed = needed;
+    this.available = available;
+  }
+}
+
+/**
+ * @typedef {object} PatchResult
+ * @property {boolean} changed  false when the region already carries the marker.
+ * @property {Buffer} source    the patched bytes (identical to the input when unchanged).
+ * @property {number} regionStart  byte offset of the region start marker.
+ * @property {number} regionLength byte length of the region, trailing newline included.
+ */
+
+function countOccurrences(haystack, needle) {
+  let count = 0;
+  let at = haystack.indexOf(needle);
+  while (at !== -1) {
+    count += 1;
+    at = haystack.indexOf(needle, at + needle.length);
+  }
+  return count;
+}
+
+/**
+ * Locate the tray region and return its byte range.
+ *
+ * @param {Buffer} main the `lib/main.js` bytes.
+ * @returns {{ start: number, length: number }}
+ */
+function locateRegion(main) {
+  const startCount = countOccurrences(main, REGION_START_MARKER);
+  if (startCount !== 1) {
+    throw new UnsupportedBuildError(
+      `expected exactly one "${REGION_START_MARKER}" marker, found ${startCount}`
+    );
+  }
+  const start = main.indexOf(REGION_START_MARKER);
+  const endAt = main.indexOf(REGION_END_MARKER, start + REGION_START_MARKER.length);
+  if (endAt === -1) {
+    throw new UnsupportedBuildError(`no "${REGION_END_MARKER}" after the tray region start`);
+  }
+  return { start, length: endAt + REGION_END_MARKER.length + 1 - start };
+}
+
+/**
+ * Insert a Restart action before the tray menu separator.
+ *
+ * @param {Buffer} main the stock `lib/main.js` bytes.
+ * @returns {PatchResult}
+ */
+export function patchDesktopMain(main) {
+  const { start: regionStart, length: regionLength } = locateRegion(main);
+  let region = main.subarray(regionStart, regionStart + regionLength).toString("utf8");
+
+  for (const token of REQUIRED_TOKENS) {
+    if (!main.includes(token)) throw new UnsupportedBuildError(`missing token "${token}"`);
+  }
+
+  // Idempotency first: an already patched region is returned untouched, before
+  // any layout check that the patch itself changed.
+  if (region.includes(PATCH_MARKER)) {
+    return { changed: false, source: main, regionStart, regionLength };
+  }
+
+  const sepCount = countOccurrences(region, SEPARATOR_ANCHOR);
+  if (sepCount !== 1) {
+    throw new UnsupportedBuildError(
+      `expected exactly one tray separator anchor, found ${sepCount}`
+    );
+  }
+
+  // Reclaim the comments first: without the space they free, the restart item
+  // never fits, and the region length is the hard constraint.
+  let reclaimed = region;
+  for (const target of RECLAIMED_COMMENTS) reclaimed = dropCommentAbove(reclaimed, target);
+
+  // The marker goes inside the region, right after the start marker line, so a
+  // later run finds it in the same slice this function inspects.
+  const afterStart = reclaimed.indexOf("\n") + 1;
+  const sepAt = reclaimed.indexOf(SEPARATOR_ANCHOR);
+  const patched =
+    reclaimed.slice(0, afterStart) +
+    PATCH_MARKER + "\n" +
+    reclaimed.slice(afterStart, sepAt) +
+    RESTART_ACTION +
+    reclaimed.slice(sepAt);
+  const needed = Buffer.byteLength(patched, "utf8");
+  if (needed > regionLength) throw new RegionOverflowError(needed, regionLength);
+  const padded = patched.padEnd(regionLength, " ");
+
+  const source = Buffer.concat([
+    main.subarray(0, regionStart),
+    Buffer.from(padded, "utf8"),
+    main.subarray(regionStart + regionLength)
+  ]);
+  return { changed: true, source, regionStart, regionLength };
+}
+
+/**
+ * Stock tray region, verbatim, as shipped in DSH Desktop 0.2.2-rc.3.
+ *
+ * FALLBACK SOURCE OF TRUTH. Restoring needs the original bytes, and the pure patch
+ * core has no filesystem access. The authoritative copy is the Backup written
+ * before the first patch, which `restoreDesktopMain` receives as an argument. This
+ * constant is only used when no region is passed: a build whose stock region
+ * differs from this text cannot be restored correctly from it, because the marker
+ * check proves the region was patched by this plugin, but not that the text
+ * underneath matches. It is exactly 1254 bytes, matching the region length the
+ * patch core asserts.
+ */
+export const STOCK_TRAY_REGION = "//#region lib/types/tray.js\n/** Windows system tray: the always-present way back to a hidden window and the explicit quit entry. */\n/** Tray icon present for the whole run, not only while the window is hidden. */\nvar DesktopTray = class {\n\toptions;\n\ttray;\n\t/** @param options - Icon path, locale reader, and the open and quit actions. */\n\tconstructor(options) {\n\t\tthis.options = options;\n\t\tconst tray = new Tray(nativeImage.createFromPath(options.iconPath));\n\t\tthis.tray = tray;\n\t\ttray.on(\"click\", () => {\n\t\t\toptions.open();\n\t\t});\n\t\tthis.relabel();\n\t}\n\t/** Rebuild the tooltip and context menu in the current locale. */\n\trelabel() {\n\t\tconst tray = this.tray;\n\t\tif (tray === void 0) return;\n\t\tconst { messages } = this.options.locale();\n\t\ttray.setToolTip(messages.aboutProduct);\n\t\ttray.setContextMenu(Menu.buildFromTemplate([\n\t\t\t{\n\t\t\t\tlabel: messages.openApplication,\n\t\t\t\tclick: () => {\n\t\t\t\t\tthis.options.open();\n\t\t\t\t}\n\t\t\t},\n\t\t\t{ type: \"separator\" },\n\t\t\t{\n\t\t\t\tlabel: messages.quitApplication,\n\t\t\t\tclick: () => {\n\t\t\t\t\tthis.options.quit();\n\t\t\t\t}\n\t\t\t}\n\t\t]));\n\t}\n\t/** Remove the icon; called once the quit is confirmed so no dead icon outlives the process. */\n\tdispose() {\n\t\tconst tray = this.tray;\n\t\tthis.tray = void 0;\n\t\ttray?.destroy();\n\t}\n};\n//#endregion\n";
+
+/**
+ * Restore the tray region to the stock text.
+ *
+ * Pure: no filesystem access. Only a region that carries the marker is
+ * rewritten; a region without it was never patched, so the input is returned
+ * unchanged and the caller learns nothing was done. The restored region is
+ * padded with spaces to the original region length, so the total byte count of
+ * `lib/main.js` never changes and every later asar offset stays valid.
+ *
+ * @param {Buffer} main the `lib/main.js` bytes, possibly already patched.
+ * @param {Buffer} [stockRegion] the original region bytes, normally read from the
+ *   Backup. Falls back to `STOCK_TRAY_REGION` when omitted.
+ * @returns {PatchResult}
+ */
+export function restoreDesktopMain(main, stockRegion = Buffer.from(STOCK_TRAY_REGION, "utf8")) {
+  const { start: regionStart } = locateRegion(main);
+
+  // The patched region is longer than the stock one: the restart item is
+  // inserted before the separator, so "//#endregion" moves to the right and the
+  // patch pads the tail with spaces to keep the file length. The window that
+  // must be overwritten is therefore the stock region length, not the length
+  // locateRegion measures on the patched bytes.
+  const regionLength = stockRegion.length;
+  const region = main.subarray(regionStart, regionStart + regionLength).toString("utf8");
+
+  // No marker means this build was never patched: leave it alone rather than
+  // rewriting a region that may belong to a newer DSH release.
+  if (!region.includes(PATCH_MARKER)) {
+    return { changed: false, source: main, regionStart, regionLength };
+  }
+
+  // A patched region always ends with "//#endregion" followed by space padding
+  // out to the stock length. If the backup's length does not land on that
+  // boundary, the backup came from a different DSH build and writing it would
+  // splice an unrelated region over this one. Refuse instead of guessing.
+  const measured = locateRegion(main).length;
+  const padding = region.slice(measured);
+  if (measured > regionLength || !/^ *$/.test(padding)) {
+    throw new RegionLengthMismatchError(measured, regionLength);
+  }
+
+  // The backup region is written verbatim; only a shorter region is padded.
+  const padded = Buffer.alloc(regionLength, 0x20);
+  stockRegion.copy(padded);
+
+  const source = Buffer.concat([
+    main.subarray(0, regionStart),
+    padded,
+    main.subarray(regionStart + regionLength)
+  ]);
+  return { changed: true, source, regionStart, regionLength };
+}

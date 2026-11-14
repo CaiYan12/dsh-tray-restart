@@ -17,6 +17,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Baseline repository files: `README.md`, `CHANGELOG.md`, `LICENSE` (MIT),
   `.gitignore`, `.gitattributes`, `.editorconfig`, `CONTRIBUTING.md`,
   `.github/` issue and PR templates.
+- `npm run check:install` (`scripts/check-install.mjs`): prints the asar path,
+  the DSH version, whether the tray is patched, the tray region offset and
+  length, and the backup metadata. Exit codes: `0` patched, `1` not patched,
+  `2` the asar is missing or unreadable.
+- `npm run restore:install` (`scripts/restore-install.mjs`): restores the stock
+  tray region from the backup and exits non-zero with a clear message when the
+  restore fails.
+- `scripts/install-status.mjs`: the shared, tested state reader and report
+  formatting behind both scripts.
+- README: install and uninstall steps, the warning that uninstalling the plugin
+  does not roll back the asar patch, the warning that the Restart item
+  interrupts running tasks, and the note that an upgrade shows the old tray menu
+  until the next start.
+
+### Changed
+
+- README rewritten around the shipped behaviour: what the plugin does, how to
+  install it, how to remove it, and the development commands.
 
 <!--
 Release sections use this shape:

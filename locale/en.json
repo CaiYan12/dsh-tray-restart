@@ -1,0 +1,10 @@
+{
+  "meta": {
+    "title": "Tray restart",
+    "description": "Adds a Restart item to the desktop tray menu so a host plugin change can be applied without quitting the application by hand."
+  },
+  "notification": {
+    "title": "DeepSeek Harness",
+    "body": "Restart DeepSeek Harness to use the new tray menu item."
+  }
+}

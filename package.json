@@ -1,0 +1,41 @@
+{
+  "name": "@local/dsh-tray-restart",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Adds a Restart item to the DSH Desktop tray menu by equal-length patching of lib/main.js inside app.asar.",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "files": [
+    "src/index.js",
+    "src/asar.js",
+    "src/desktop-asar.js",
+    "src/patch.js",
+    "src/backup.js",
+    "cordis.patch.yml",
+    "locale/*.json"
+  ],
+  "scripts": {
+    "test": "node --test test/",
+    "check:install": "node scripts/check-install.mjs",
+    "restore:install": "node scripts/restore-install.mjs"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=22",
+    "dsh": ">=0.2.2-rc.3 <0.3.0"
+  },
+  "dsh": {
+    "manifestVersion": 1,
+    "bundle": {
+      "platforms": [
+        "win32"
+      ],
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

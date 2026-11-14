@@ -1,0 +1,10 @@
+{
+  "meta": {
+    "title": "托盘重启",
+    "description": "在桌面端托盘菜单里加入「重启」项，装完或升级宿主插件后不必手动退出再打开。"
+  },
+  "notification": {
+    "title": "DeepSeek Harness",
+    "body": "重启 DeepSeek Harness 后，托盘菜单里的「重启」项才会生效。"
+  }
+}

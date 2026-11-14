@@ -1,37 +1,226 @@
 # dsh-tray-restart
 
-Self-built DSH (DeepSeek Harness) tray restart plugin.
+Self-built DSH (DeepSeek Harness) Desktop plugin that adds a **Restart** item to
+the tray menu, so the desktop process can be restarted from the tray after
+installing, removing or upgrading a host plugin — without quitting and
+reopening the app by hand.
 
-> **Status: pre-implementation.** This repository currently contains only the
-> project scaffolding produced by `/setup-matt-pocock-skills` and `/init`.
-> No plugin code exists yet.
+> **Status: installable, not yet verified on a live desktop.** The patch core,
+> asar I/O, backup, Host entry and the two maintenance scripts are covered by
+> `npm test`. Installing the bundle into the desktop profile and clicking the
+> tray item is the remaining verification step.
 
-## What it is meant to do
+## The problem
 
-Add a **restart** item to the DSH Desktop tray menu, so that after installing,
-removing or upgrading a host plugin the desktop process can be restarted from
-the tray instead of being quit and reopened by hand.
+The desktop shell keeps its tray inside the Electron main process and exposes
+no plugin API for menu items. Host plugins are loaded once at startup and their
+ESM modules are cached, so after installing, removing or upgrading a host plugin
+the running process keeps the old code until it is restarted.
+
+The existing plugin `@hxhxh/dsh-tray-restart@0.3.1` refuses to work on DSH
+Desktop **0.2.2-rc.3**: it runs `node --check` over the whole patched
+`lib/main.js` and rejects the result. That check is too strict for this build —
+the stock file is a valid ES module, but a whole-file syntax check is not the
+right gate for an equal-length region edit.
+
+This plugin takes a different route: it patches only the
+`//#region lib/types/tray.js` … `//#endregion` block of `lib/main.js` inside
+`resources/app.asar`, **in place and at equal length**, so every offset and
+size in the asar header stays valid. Only the file contents change, and the
+asar integrity record is rewritten to match. See
+[`docs/adr/0001-tray-patch-strategy.md`](./docs/adr/0001-tray-patch-strategy.md).
+
+## What it does
+
+- Adds `Restart DeepSeek Harness` above the separator in the tray menu.
+- Runs `app.relaunch()` and then `quitWithoutConfirmation()`, so the desktop
+  comes back up immediately with the new plugin code.
+- Patches once per Host start, on Windows only, and never lets a failure reach
+  the Host: every unsuccessful path ends in a log line.
+- Saves the stock tray region to a backup **before** the first patch, so the
+  patch can be rolled back later (see [Uninstall](#uninstall)).
 
 ## Package name
 
-`@local/dsh-tray-restart`
+`@local/dsh-tray-restart` — installed into the desktop profile
+(`~/.dsh/profiles/desktop`) as a local link.
 
-Installed into the desktop profile (`~/.dsh/profiles/desktop`) as a local link,
-following the same pattern as `@local/dsh-overload-preset`.
+## Install
 
-## Why not the existing plugin
+1. Make sure DSH Desktop is installed. The asar lives at
+   `<install dir>\resources\app.asar`, next to the desktop executable.
+2. Link the package into the desktop profile, the same way as the other local
+   plugins:
 
-`@hxhxh/dsh-tray-restart@0.3.1` fails on DSH Desktop **0.2.2-rc.3**:
+   ```sh
+   cd ~/.dsh/profiles/desktop
+   pnpm add link:../../path/to/dsh-tray-restart
+   ```
+
+3. Add the bundle patch row to the profile's `cordis.patch.yml`. The bundle
+   ships it as `cordis.patch.yml` in this repository:
+
+   ```yaml
+   - insert:
+       - id: tray-restart
+         name: '@local/dsh-tray-restart'
+   ```
+
+4. Restart DeepSeek Harness once so the Host loads the plugin. On that start
+   the plugin patches the asar and logs the outcome.
+
+5. **Restart once more.** The patch only takes effect on the *next* start, so the
+   first start after installing still shows the old tray menu. The Restart item
+   appears from the second start onward.
+
+6. Confirm the state at any time:
+
+   ```sh
+   npm run check:install
+   ```
+
+   ```
+   dsh-tray-restart install status
+     asar: D:\Program Files\Deepseek\resources\app.asar
+     DSH version: 0.2.2-rc.3
+     lib/main.js: 848505 bytes
+     state: patched (Restart item present)
+     tray region: offset 779389, length 1254 bytes, end 780643
+     backup: C:\Users\<you>\.dsh\tray-restart-backup
+       DSH version: 0.2.2-rc.3
+       region: offset 779389, length 1254 bytes
+       sha256: <64 hex characters>
+       created: <ISO timestamp>
+   ```
+
+## Uninstall
+
+> ### ⚠️ Removing the plugin does **not** undo the asar patch
+>
+> The DSH plugin uninstall flow (removing the row from `cordis.patch.yml`,
+> `pnpm remove`, or disabling the plugin in the UI) only stops the plugin from
+> running. The patched `app.asar` stays patched, so the **Restart item keeps
+> showing up in the tray menu** even with the plugin gone.
+>
+> **You must run the restore script by hand after uninstalling the plugin:**
+
+```sh
+npm run restore:install
+```
+
+The script writes the stock tray region back from the backup, then reports:
 
 ```
-menu patch failed: patched main.js failed syntax check; refusing to touch app.asar
-SyntaxError: Unexpected token '}'
+dsh-tray-restart restore
+  asar: D:\Program Files\Deepseek\resources\app.asar
+  state: restored to the stock tray region
+  backup used: yes
+  lib/main.js: 848505 bytes
+
+Restart DeepSeek Harness to drop the Restart item from the tray menu.
 ```
 
-Root cause: the packaged `app.asar` → `lib/main.js` is itself syntactically
-incomplete (starts with `\n}`, ends with `//#endregion\nexport {`). A whole-file
-`node --check` therefore fails on the **stock** file, so any patch strategy that
-validates the whole file will always refuse to write.
+Full uninstall order:
+
+1. `npm run restore:install` (restores the asar; run it **before** the backup
+   directory is cleaned up).
+2. Remove the `tray-restart` row from `cordis.patch.yml`.
+3. `pnpm remove @local/dsh-tray-restart` in `~/.dsh/profiles/desktop`.
+4. Restart DeepSeek Harness.
+
+Notes:
+
+- If no backup exists the restore is **refused** rather than guessed — a
+  hardcoded stock region only holds for one DSH release. The error names the
+  backup directory it looked in.
+- Running `npm run restore:install` on an asar that was never patched prints
+  `already stock; nothing to restore` and exits 0.
+- The backup lives in `~/.dsh/tray-restart-backup/` (`tray-region.bin` plus
+  `meta.json`). Override the directory with
+  `DSH_TRAY_RESTART_BACKUP_DIR` — useful for testing against a copy.
+
+## Warnings
+
+> ### ⚠️ The Restart item interrupts running tasks
+>
+> Clicking **Restart DeepSeek Harness** calls `quitWithoutConfirmation()`,
+> which **skips the "tasks are still running" confirmation** and relaunches the
+> app immediately. Any session that is still working is cut off mid-task.
+> Check that no other session is running a long task before you click it.
+
+> ### ⚠️ After a desktop upgrade the first start still shows the old menu
+>
+> Upgrading DSH Desktop replaces `app.asar` wholesale, which discards the patch.
+> The plugin re-applies it on the next Host start, but the new menu item only
+> appears on the start **after** that one. If the item is missing right after an
+> upgrade, start the desktop once more. Do not patch the asar by hand.
+
+## Development
+
+```sh
+npm test                 # node --test test/
+npm run check:install    # print the current install state
+npm run restore:install  # restore the stock tray region
+```
+
+### Running the full test suite
+
+The unit tests run everywhere. The suites that read a real DSH build are
+skipped unless two environment variables point at one — this repository does
+not commit the 848505-byte `lib/main.js` fixture or any install path, so both
+are supplied per machine:
+
+```sh
+# A copy of lib/main.js extracted from resources/app.asar
+export DSH_TRAY_FIXTURE=/path/to/main-stock.js
+# The installed asar the integration suites copy (never written in place)
+export DSH_TRAY_ASAR=/path/to/resources/app.asar
+
+npm test
+```
+
+With both set the whole suite runs; without them the dependent tests are
+skipped with a message naming the variable that is missing, and nothing fails.
+
+Both scripts accept an explicit asar path and honour `DSH_DESKTOP_APP_ASAR`:
+
+```sh
+node scripts/check-install.mjs "C:/path/to/resources/app.asar"
+DSH_DESKTOP_APP_ASAR="C:/path/to/resources/app.asar" npm run check:install
+```
+
+With neither supplied they find the installation themselves, in this order
+(`src/desktop-asar.js`):
+
+1. the first command-line argument
+2. `DSH_DESKTOP_APP_ASAR`
+3. `resources/app.asar` beside `process.execPath`, when that is the desktop
+   executable — the case inside the Host
+4. the backup sidecar `~/.dsh/tray-restart-backup/meta.json`, which records the
+   asar an earlier patch came from
+5. the Windows uninstall registry, where the desktop publishes `DisplayIcon`
+   and `InstallLocation`
+6. `resources/app.asar` beside `process.execPath` — the old fallback, kept last
+   so the resolution never throws
+
+Steps 4 and 5 are what make `npm run check:install` work from a plain terminal,
+where `process.execPath` is `node.exe` and step 3 does not apply. If the asar is
+still not found, the error names every probe that was tried and the two ways to
+supply the path.
+
+`check:install` exit codes: `0` patched, `1` not patched, `2` the asar is
+missing or unreadable. `restore:install` exit codes: `0` restored or already
+stock, `1` restore failed, `2` the asar is missing or unreadable.
+
+The asar tests read the stock `lib/main.js` fixture from `DSH_TRAY_FIXTURE`
+and the installed asar from `DSH_TRAY_ASAR` (see
+[Running the full test suite](#running-the-full-test-suite)), and always work on
+a temporary copy of the installed asar — no test writes to the real `app.asar`
+or to `~/.dsh/tray-restart-backup`.
+
+The scripts resolve the asar path by probing the machine (see
+[Development](#development)); pass an explicit path or `DSH_DESKTOP_APP_ASAR` to
+override the probe.
 
 ## References
 
@@ -48,23 +237,28 @@ Prior art reviewed before building:
 ├── AGENTS.md              agent instructions (incl. the Agent skills block)
 ├── CHANGELOG.md
 ├── CONTRIBUTING.md
+├── GLOSSARY.md            domain vocabulary
 ├── LICENSE                MIT
 ├── README.md
-├── .editorconfig
-├── .gitattributes
-├── .gitignore
-├── .github/               issue and PR templates
+├── cordis.patch.yml       the bundle patch row
+├── package.json
+├── locale/                notification copy
+├── scripts/
+│   ├── install-status.mjs shared state reader and report formatting
+│   ├── check-install.mjs  print the current install state
+│   └── restore-install.mjs restore the stock tray region
+├── src/
+│   ├── index.js           Host plugin entry
+│   ├── desktop-asar.js    locating the installed app.asar
+│   ├── asar.js            asar I/O and integrity rewrite
+│   ├── patch.js           pure equal-length patch core
+│   └── backup.js          stock-region backup
+├── test/                  node:test suites
 └── docs/
-    ├── adr/               architecture decision records (created lazily)
-    └── agents/            per-repo config for the engineering skills
-        ├── domain.md
-        ├── issue-tracker.md
-        └── triage-labels.md
+    ├── adr/               architecture decision records
+    ├── agents/            per-repo config for the engineering skills
+    └── research/          measurement records
 ```
-
-## Development
-
-Not yet defined — no `package.json` or source code exists.
 
 The engineering workflow for this repo is the Matt Pocock skill flow
 (`/grill-with-docs` → `/to-spec` → `/to-tickets` → `/implement` → `/retro`).

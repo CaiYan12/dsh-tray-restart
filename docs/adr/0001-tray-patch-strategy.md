@@ -32,7 +32,7 @@ DSH 桌面端的托盘菜单由 Electron 主进程的 `DesktopTray` 类创建，
 - **实测原位写入可行**：DSH 正在运行（9 个进程）时，对 `app.asar` 做
   `openSync(..., 'r+')` + `writeSync` 成功。ShawnZhangGy 用「退出后换包」规避的
   运行时 EPERM 在本机未复现，其核心优势因此不存在。
-- **改动面最小**：只改 1254 字节的 tray region，`lib/main.js` 其余 84.7 万字节
+- **改动面最小**：只改 1253 字节的 Tray region（起始字节偏移 779389，1254 含末尾换行），`lib/main.js` 其余 84.7 万字节
   不动，总长度不变，asar 内所有偏移保持有效。
 - **失败不破坏**：区域放不下或锚点校验失败时拒绝写入，asar 保持原样。
 - **Joshua1ya 方案被否**：两个托盘图标是可见的产品缺陷，`taskkill /F` 有丢数据

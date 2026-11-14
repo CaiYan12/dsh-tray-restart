@@ -1,0 +1,320 @@
+import test, { before, after } from "node:test";
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  MAIN_PATH,
+  STOCK_MAIN_BYTES,
+  STOCK_REGION_LENGTH,
+  STOCK_REGION_START,
+  asarSkip,
+  repoRoot,
+  sandboxStockAsar,
+  tempDir
+} from "./fixture.js";
+import { PATCH_MARKER } from "../src/patch.js";
+import { applyTrayRestart } from "../src/asar.js";
+import { BACKUP_DIR_ENV } from "../src/backup.js";
+import {
+  CHECK_EXIT,
+  DEFAULT_ASAR_PATH,
+  asarPathFromArgs,
+  asarPathFromExecPath,
+  checkExitCode,
+  formatCheckReport,
+  formatRestoreReport,
+  missingAsarMessage,
+  readInstallStatus,
+  resolveInstallAsar
+} from "../scripts/install-status.mjs";
+
+/**
+ * The installed asar. Only ever read: every case works on a temporary copy, and
+ * the backup directory is redirected with DSH_TRAY_RESTART_BACKUP_DIR so the
+ * real ~/.dsh/tray-restart-backup is never touched.
+ */
+const skip = asarSkip();
+
+/** @type {string} */
+let workRoot;
+let previousBackupEnv;
+
+/**
+ * A fresh asar copy plus a fresh, empty backup directory under the temp root.
+ *
+ * The copy is restored to the stock tray region first: the cases below assert the
+ * stock state, and the installed asar is not necessarily stock — a user who has
+ * run the plugin has a patched one.
+ */
+function sandbox() {
+  return sandboxStockAsar(workRoot);
+}
+
+before(() => {
+  if (skip) return;
+  workRoot = tempDir("dsh-tray-restart-install-status-");
+  previousBackupEnv = process.env[BACKUP_DIR_ENV];
+});
+
+after(() => {
+  if (previousBackupEnv === undefined) delete process.env[BACKUP_DIR_ENV];
+  else process.env[BACKUP_DIR_ENV] = previousBackupEnv;
+  if (workRoot) rmSync(workRoot, { recursive: true, force: true });
+});
+
+// ── readInstallStatus: the state the two scripts report on ─────────────────
+
+test("a stock asar reports not patched with the version and region range", { skip }, () => {
+  const { asarCopy } = sandbox();
+  const status = readInstallStatus(asarCopy);
+
+  assert.equal(status.exists, true);
+  assert.equal(status.asarPath, asarCopy);
+  assert.equal(status.patched, false);
+  assert.equal(status.dshVersion, "0.2.2-rc.3");
+  assert.equal(status.regionStart, STOCK_REGION_START);
+  assert.equal(status.regionLength, STOCK_REGION_LENGTH);
+  assert.equal(status.regionEnd, STOCK_REGION_START + STOCK_REGION_LENGTH);
+  assert.equal(status.backup.exists, false);
+});
+
+test("a patched asar reports patched and keeps the region range", { skip }, () => {
+  const { asarCopy } = sandbox();
+  applyTrayRestart(asarCopy);
+  const status = readInstallStatus(asarCopy);
+
+  assert.equal(status.patched, true);
+  assert.equal(status.regionStart, STOCK_REGION_START);
+  assert.equal(status.regionLength, STOCK_REGION_LENGTH);
+  assert.equal(status.backup.exists, true);
+  assert.equal(status.backup.meta.regionStart, STOCK_REGION_START);
+  assert.match(status.backup.meta.sha256, /^[0-9a-f]{64}$/);
+});
+
+test("a missing asar reports exists false instead of throwing", () => {
+  const missing = join(mkdtempSync(join(tmpdir(), "dsh-tray-restart-absent-")), "app.asar");
+  // The backup directory is redirected by the other cases in this file, so the
+  // backup is read here explicitly rather than inherited from the environment.
+  const status = readInstallStatus(missing, { backup: { exists: false, dir: "C:\\\\x\\\\backup" } });
+  assert.equal(status.exists, false);
+  assert.equal(status.patched, false);
+  assert.equal(status.regionStart, null);
+  assert.equal(status.backup.exists, false);
+});
+
+test("a file that is not an asar reports the parse error instead of throwing", () => {
+  const dir = mkdtempSync(join(tmpdir(), "dsh-tray-restart-not-asar-"));
+  const file = join(dir, "app.asar");
+  try {
+    writeFileSync(file, "not an asar at all");
+    const status = readInstallStatus(file);
+    assert.equal(status.exists, true);
+    assert.equal(status.patched, false);
+    assert.match(status.error, /not a supported asar/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ── checkExitCode: the contract scripts depend on ─────────────────────────
+
+test("checkExitCode is 0 only for a patched, readable asar", () => {
+  assert.equal(checkExitCode({ exists: true, patched: true }), CHECK_EXIT.patched);
+  assert.equal(checkExitCode({ exists: true, patched: false }), CHECK_EXIT.notPatched);
+  assert.equal(checkExitCode({ exists: false, patched: false }), CHECK_EXIT.unreadable);
+  assert.equal(checkExitCode({ exists: true, patched: false, error: "boom" }), CHECK_EXIT.unreadable);
+});
+
+test("the exit codes are 0, 1 and 2", () => {
+  assert.deepEqual(CHECK_EXIT, { patched: 0, notPatched: 1, unreadable: 2 });
+});
+
+// ── formatCheckReport: what the user reads ────────────────────────────────
+
+test("the check report names the asar, the version, the state and the region", () => {
+  const text = formatCheckReport({
+    exists: true,
+    asarPath: "C:\\x\\app.asar",
+    dshVersion: "0.2.2-rc.3",
+    patched: false,
+    regionStart: STOCK_REGION_START,
+    regionLength: STOCK_REGION_LENGTH,
+    regionEnd: STOCK_REGION_START + STOCK_REGION_LENGTH,
+    backup: { exists: false, dir: "C:\\x\\backup" }
+  });
+  assert.match(text, /C:\\x\\app\.asar/);
+  assert.match(text, /0\.2\.2-rc\.3/);
+  assert.match(text, /not patched/i);
+  assert.match(text, new RegExp(String(STOCK_REGION_START)));
+  assert.match(text, new RegExp(String(STOCK_REGION_LENGTH)));
+  assert.match(text, /no backup/i);
+});
+
+test("the check report says patched and prints the backup metadata", () => {
+  const text = formatCheckReport({
+    exists: true,
+    asarPath: "C:\\x\\app.asar",
+    dshVersion: "0.2.2-rc.3",
+    patched: true,
+    regionStart: STOCK_REGION_START,
+    regionLength: STOCK_REGION_LENGTH,
+    regionEnd: STOCK_REGION_START + STOCK_REGION_LENGTH,
+    backup: {
+      exists: true,
+      dir: "C:\\x\\backup",
+      meta: {
+        dshVersion: "0.2.2-rc.3",
+        regionStart: STOCK_REGION_START,
+        regionLength: STOCK_REGION_LENGTH,
+        sha256: "a".repeat(64),
+        createdAt: "2026-11-14T00:00:00.000Z"
+      }
+    }
+  });
+  assert.match(text, /patched/i);
+  assert.match(text, /2026-11-14T00:00:00\.000Z/);
+  assert.match(text, /a{64}/);
+});
+
+test("the check report says the asar is missing", () => {
+  const text = formatCheckReport({ exists: false, asarPath: "C:\\x\\app.asar", patched: false, backup: { exists: false } });
+  assert.match(text, /not found/i);
+  assert.match(text, /C:\\x\\app\.asar/);
+});
+
+// ── formatRestoreReport ───────────────────────────────────────────────────
+
+test("the restore report says restored when the region changed", () => {
+  const text = formatRestoreReport({ changed: true, asarPath: "C:\\x\\app.asar", backupUsed: true, mainBytes: STOCK_MAIN_BYTES });
+  assert.match(text, /restored/i);
+  assert.match(text, /C:\\x\\app\.asar/);
+});
+
+test("the restore report says already stock when nothing changed", () => {
+  const text = formatRestoreReport({ changed: false, asarPath: "C:\\x\\app.asar", backupUsed: false, mainBytes: STOCK_MAIN_BYTES });
+  assert.match(text, /already stock/i);
+});
+
+// ── asarPathFromArgs: argument, then environment, then default ─────────────
+
+test("asarPathFromArgs prefers the argument, then the environment, then the probes", () => {
+  const probes = { execPath: "C:\\Program Files\\nodejs\\node.exe", platform: "win32", exists: () => true };
+  assert.equal(asarPathFromArgs(["C:\\a\\app.asar"], {}, probes), "C:\\a\\app.asar");
+  assert.equal(asarPathFromArgs([], { DSH_DESKTOP_APP_ASAR: "C:\\b\\app.asar" }, probes), "C:\\b\\app.asar");
+});
+
+test("asarPathFromArgs finds the install through the probe when nothing is passed", () => {
+  // The terminal case: process.execPath is node.exe, the backup and the registry
+  // know where the desktop is. The scripts must use that answer, not node's.
+  const installed = join("C:\\Program Files\\Deepseek", "resources", "app.asar");
+  const path = asarPathFromArgs([], {}, {
+    execPath: "C:\\Program Files\\nodejs\\node.exe",
+    platform: "win32",
+    exists: (candidate) => candidate === installed,
+    fromBackup: () => installed,
+    fromRegistry: () => null
+  });
+  assert.equal(path, installed);
+});
+
+test("asarPathFromArgs keeps the execPath fallback when no probe answers", () => {
+  const path = asarPathFromArgs([], {}, {
+    execPath: "C:\\Program Files\\nodejs\\node.exe",
+    platform: "win32",
+    exists: () => false,
+    fromBackup: () => null,
+    fromRegistry: () => null
+  });
+  assert.equal(path, join("C:\\Program Files\\nodejs", "resources", "app.asar"));
+});
+
+test("resolveInstallAsar keeps the source so a missing asar can be explained", () => {
+  const resolution = resolveInstallAsar([], {}, {
+    execPath: "C:\\Program Files\\nodejs\\node.exe",
+    platform: "win32",
+    exists: () => false,
+    fromBackup: () => null,
+    fromRegistry: () => null
+  });
+  assert.equal(resolution.source, "execPath-fallback");
+  assert.equal(resolution.probed.length, 2);
+  const message = missingAsarMessage(resolution);
+  assert.match(message, /app\.asar not found at/);
+  assert.match(message, /DSH_DESKTOP_APP_ASAR/);
+});
+
+// ── the scripts as processes: the acceptance criteria ─────────────────────
+
+function runScript(script, args, env) {
+  return spawnSync(process.execPath, [join(repoRoot, "scripts", script), ...args], {
+    encoding: "utf8",
+    env: { ...process.env, ...env }
+  });
+}
+
+test("check-install exits 1 on a stock asar and 0 once patched", { skip }, () => {
+  const { asarCopy, backup } = sandbox();
+  const env = { [BACKUP_DIR_ENV]: backup };
+
+  const before = runScript("check-install.mjs", [asarCopy], env);
+  assert.equal(before.status, CHECK_EXIT.notPatched, before.stderr);
+  assert.match(before.stdout, /not patched/i);
+
+  applyTrayRestart(asarCopy);
+
+  const after = runScript("check-install.mjs", [asarCopy], env);
+  assert.equal(after.status, CHECK_EXIT.patched, after.stderr);
+  assert.match(after.stdout, /patched/i);
+});
+
+test("restore-install restores the stock region and check-install then reports not patched", { skip }, () => {
+  const { asarCopy, backup } = sandbox();
+  const env = { [BACKUP_DIR_ENV]: backup };
+  const original = readFileSync(asarCopy);
+  applyTrayRestart(asarCopy);
+
+  const restored = runScript("restore-install.mjs", [asarCopy], env);
+  assert.equal(restored.status, 0, restored.stderr);
+  assert.match(restored.stdout, /restored/i);
+
+  const after = readFileSync(asarCopy);
+  assert.ok(after.equals(original), "the asar is byte-identical to the stock copy");
+  assert.ok(!after.includes(PATCH_MARKER));
+
+  const check = runScript("check-install.mjs", [asarCopy], env);
+  assert.equal(check.status, CHECK_EXIT.notPatched, check.stderr);
+  assert.match(check.stdout, /not patched/i);
+});
+
+test("restore-install exits non-zero with a clear message when the backup is gone", { skip }, () => {
+  const { asarCopy, backup } = sandbox();
+  applyTrayRestart(asarCopy);
+  rmSync(backup, { recursive: true, force: true });
+
+  const result = runScript("restore-install.mjs", [asarCopy], { [BACKUP_DIR_ENV]: backup });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /no tray-restart backup/);
+});
+
+test("restore-install on a stock asar says already stock and exits 0", { skip }, () => {
+  const { asarCopy, backup } = sandbox();
+  const result = runScript("restore-install.mjs", [asarCopy], { [BACKUP_DIR_ENV]: backup });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /already stock/i);
+});
+
+test("restore-install exits 2 when the asar is missing", () => {
+  const missing = join(tmpdir(), `dsh-tray-restart-missing-${process.pid}.asar`);
+  const result = runScript("restore-install.mjs", [missing], {});
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /not found/i);
+});
+
+test("check-install exits 2 when the asar is missing", () => {
+  const missing = join(tmpdir(), `dsh-tray-restart-missing-${process.pid}.asar`);
+  const result = runScript("check-install.mjs", [missing], {});
+  assert.equal(result.status, CHECK_EXIT.unreadable);
+  assert.match(result.stdout, /not found/i);
+});
