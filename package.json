@@ -1,0 +1,15 @@
+{
+  "name": "@local/dsh-tray-restart",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Adds a restart item to the DSH Desktop tray menu by equal-length patching of lib/main.js inside app.asar.",
+  "main": "src/index.js",
+  "scripts": {
+    "test": "node --test test/"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  }
+}
