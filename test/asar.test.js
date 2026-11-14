@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { loadStockMain, fixtureSkip } from "./fixture.js";
 import { PATCH_MARKER, STOCK_TRAY_REGION } from "../src/patch.js";
 import { applyTrayRestart, restoreTrayRestart } from "../src/asar.js";
+import { BACKUP_DIR_ENV } from "../src/backup.js";
 
 /**
  * Path of the installed DSH Desktop asar. Only ever read: every test that
@@ -67,15 +68,23 @@ function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
+let previousBackupEnv;
+
 before(() => {
   if (skip) return;
   workDir = mkdtempSync(join(tmpdir(), "dsh-tray-restart-asar-"));
   asarCopy = join(workDir, "app.asar");
   copyFileSync(REAL_ASAR, asarCopy);
   stockMain = loadStockMain();
+  // applyTrayRestart writes a backup; keep it inside the temp directory so the
+  // real ~/.dsh/tray-restart-backup is never touched by the test suite.
+  previousBackupEnv = process.env[BACKUP_DIR_ENV];
+  process.env[BACKUP_DIR_ENV] = join(workDir, "backup");
 });
 
 after(() => {
+  if (previousBackupEnv === undefined) delete process.env[BACKUP_DIR_ENV];
+  else process.env[BACKUP_DIR_ENV] = previousBackupEnv;
   if (workDir) rmSync(workDir, { recursive: true, force: true });
 });
 
