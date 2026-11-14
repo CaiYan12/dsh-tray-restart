@@ -19,7 +19,9 @@
     "locale/*.json"
   ],
   "scripts": {
-    "test": "node --test test/"
+    "test": "node --test test/",
+    "check:install": "node scripts/check-install.mjs",
+    "restore:install": "node scripts/restore-install.mjs"
   },
   "license": "MIT",
   "engines": {
