@@ -22,7 +22,8 @@
 
 import { createHash } from "node:crypto";
 
-import { patchDesktopMain, restoreDesktopMain } from "./patch.js";
+import { PATCH_MARKER, patchDesktopMain, restoreDesktopMain } from "./patch.js";
+import { backupExists, readBackup, writeBackup } from "./backup.js";
 
 /**
  * Filesystem implementation.
@@ -47,6 +48,9 @@ const fs = await loadFs();
 /** Path of `lib/main.js` inside the asar tree. */
 const MAIN_PATH = ["lib", "main.js"];
 
+/** Path of the asar's own manifest, read for the DSH version. */
+const PACKAGE_PATH = ["package.json"];
+
 /** Thrown when the file is not a readable asar, or lacks the expected entry. */
 export class AsarFormatError extends Error {
   constructor(reason) {
@@ -61,6 +65,8 @@ export class AsarFormatError extends Error {
  * @property {string} asarPath          the path that was handled.
  * @property {number} mainBytes         byte length of `lib/main.js`.
  * @property {boolean} integrityUpdated true when the integrity record was rewritten.
+ * @property {boolean} backupCreated    true when this call wrote the backup.
+ * @property {boolean} backupUsed       true when the backup bytes were read for the restore.
  */
 
 /** Read exactly `length` bytes at `position`, looping over short reads. */
@@ -167,11 +173,28 @@ function replaceHash(headerBuffer, from, to, occurrences) {
   return replaced;
 }
 
+/** Read `version` from the asar's own `package.json`. */
+function versionOf(fd, header, dataOffset, fileSize) {
+  const node = nodeAt(header, PACKAGE_PATH);
+  if (node.unpacked || node.files) throw new AsarFormatError("package.json is not a packed file");
+  const offset = dataOffset + Number(node.offset);
+  const size = Number(node.size);
+  if (offset + size > fileSize) throw new AsarFormatError("package.json extends past the end of the file");
+  const manifest = JSON.parse(readExactly(fd, size, offset).toString("utf8"));
+  if (typeof manifest.version !== "string" || manifest.version === "") {
+    throw new AsarFormatError("package.json carries no version");
+  }
+  return manifest.version;
+}
+
 /**
  * Run `transform` against `lib/main.js` and write the result back.
  *
  * @param {string} asarPath
- * @param {(main: Buffer) => { changed: boolean, source: Buffer }} transform
+ * @param {(main: Buffer, hooks: {
+ *   backup: (regionStart: number, regionLength: number) => void,
+ *   readBackup: () => { region: Buffer, meta: object }
+ * }) => { changed: boolean, source: Buffer }} transform
  * @returns {TrayRestartResult}
  */
 function run(asarPath, transform) {
@@ -188,10 +211,31 @@ function run(asarPath, transform) {
     }
 
     const main = readExactly(fd, mainSize, mainOffset);
-    const result = transform(main);
+
+    // The backup is taken here, with the stock bytes in hand and before anything is
+    // written. A transform that reports no change (already patched, or never
+    // patched) must not create one: those bytes are not necessarily stock.
+    let backupCreated = false;
+    let backupUsed = false;
+    const result = transform(main, {
+      backup(regionStart, regionLength) {
+        if (backupExists()) return;
+        const version = versionOf(fd, header, dataOffset, fileSize);
+        backupCreated = writeBackup({
+          region: main.subarray(regionStart, regionStart + regionLength),
+          regionStart,
+          dshVersion: version,
+          asarPath
+        }).created;
+      },
+      readBackup() {
+        backupUsed = true;
+        return readBackup();
+      }
+    });
 
     if (!result.changed) {
-      return { changed: false, asarPath, mainBytes: mainSize, integrityUpdated: false };
+      return { changed: false, asarPath, mainBytes: mainSize, integrityUpdated: false, backupCreated, backupUsed };
     }
     if (result.source.length !== mainSize) {
       throw new Error(
@@ -229,7 +273,7 @@ function run(asarPath, transform) {
     }
 
     fs.fsyncSync(fd);
-    return { changed: true, asarPath, mainBytes: mainSize, integrityUpdated };
+    return { changed: true, asarPath, mainBytes: mainSize, integrityUpdated, backupCreated, backupUsed };
   } finally {
     fs.closeSync(fd);
   }
@@ -242,7 +286,11 @@ function run(asarPath, transform) {
  * @returns {TrayRestartResult}
  */
 export function applyTrayRestart(asarPath) {
-  return run(asarPath, (main) => patchDesktopMain(main));
+  return run(asarPath, (main, hooks) => {
+    const result = patchDesktopMain(main);
+    if (result.changed) hooks.backup(result.regionStart, result.regionLength);
+    return result;
+  });
 }
 
 /**
@@ -252,7 +300,13 @@ export function applyTrayRestart(asarPath) {
  * @returns {TrayRestartResult}
  */
 export function restoreTrayRestart(asarPath) {
-  return run(asarPath, (main) => restoreDesktopMain(main));
+  return run(asarPath, (main, hooks) => {
+    // Only a patched region needs the backup. An asar without the marker is left
+    // alone, so it must not fail just because no backup was ever written.
+    if (!main.includes(PATCH_MARKER)) return restoreDesktopMain(main);
+    const backup = hooks.readBackup();
+    return restoreDesktopMain(main, backup.region);
+  });
 }
 
 export { MAIN_PATH };
