@@ -158,3 +158,57 @@ export function patchDesktopMain(main) {
   ]);
   return { changed: true, source, regionStart, regionLength };
 }
+
+/**
+ * Stock tray region, verbatim, as shipped in DSH Desktop 0.2.2-rc.3.
+ *
+ * TEMPORARY SOURCE OF TRUTH. Restoring needs the original bytes, and the pure
+ * patch core has no filesystem access, so the stock region is embedded here
+ * instead of being read from the asar or from a test fixture. It is exactly
+ * 1254 bytes, matching the region length the patch core asserts.
+ *
+ * T4 replaces this constant with a read from the Backup written before the
+ * first patch. Until then, a build whose stock region differs from this text
+ * cannot be restored correctly from here: the marker check proves the region
+ * was patched by this plugin, but not that the text underneath matches.
+ */
+export const STOCK_TRAY_REGION = "//#region lib/types/tray.js\n/** Windows system tray: the always-present way back to a hidden window and the explicit quit entry. */\n/** Tray icon present for the whole run, not only while the window is hidden. */\nvar DesktopTray = class {\n\toptions;\n\ttray;\n\t/** @param options - Icon path, locale reader, and the open and quit actions. */\n\tconstructor(options) {\n\t\tthis.options = options;\n\t\tconst tray = new Tray(nativeImage.createFromPath(options.iconPath));\n\t\tthis.tray = tray;\n\t\ttray.on(\"click\", () => {\n\t\t\toptions.open();\n\t\t});\n\t\tthis.relabel();\n\t}\n\t/** Rebuild the tooltip and context menu in the current locale. */\n\trelabel() {\n\t\tconst tray = this.tray;\n\t\tif (tray === void 0) return;\n\t\tconst { messages } = this.options.locale();\n\t\ttray.setToolTip(messages.aboutProduct);\n\t\ttray.setContextMenu(Menu.buildFromTemplate([\n\t\t\t{\n\t\t\t\tlabel: messages.openApplication,\n\t\t\t\tclick: () => {\n\t\t\t\t\tthis.options.open();\n\t\t\t\t}\n\t\t\t},\n\t\t\t{ type: \"separator\" },\n\t\t\t{\n\t\t\t\tlabel: messages.quitApplication,\n\t\t\t\tclick: () => {\n\t\t\t\t\tthis.options.quit();\n\t\t\t\t}\n\t\t\t}\n\t\t]));\n\t}\n\t/** Remove the icon; called once the quit is confirmed so no dead icon outlives the process. */\n\tdispose() {\n\t\tconst tray = this.tray;\n\t\tthis.tray = void 0;\n\t\ttray?.destroy();\n\t}\n};\n//#endregion\n";
+
+/**
+ * Restore the tray region to the stock text.
+ *
+ * Pure: no filesystem access. Only a region that carries the marker is
+ * rewritten; a region without it was never patched, so the input is returned
+ * unchanged and the caller learns nothing was done. The restored region is
+ * padded with spaces to the original region length, so the total byte count of
+ * `lib/main.js` never changes and every later asar offset stays valid.
+ *
+ * @param {Buffer} main the `lib/main.js` bytes, possibly already patched.
+ * @returns {PatchResult}
+ */
+export function restoreDesktopMain(main) {
+  const { start: regionStart } = locateRegion(main);
+
+  // The patched region is longer than the stock one: the restart item is
+  // inserted before the separator, so "//#endregion" moves to the right and the
+  // patch pads the tail with spaces to keep the file length. The window that
+  // must be overwritten is therefore the stock region length, not the length
+  // locateRegion measures on the patched bytes.
+  const regionLength = Buffer.byteLength(STOCK_TRAY_REGION, "utf8");
+  const region = main.subarray(regionStart, regionStart + regionLength).toString("utf8");
+
+  // No marker means this build was never patched: leave it alone rather than
+  // rewriting a region that may belong to a newer DSH release.
+  if (!region.includes(PATCH_MARKER)) {
+    return { changed: false, source: main, regionStart, regionLength };
+  }
+
+  const padded = STOCK_TRAY_REGION.padEnd(regionLength, " ");
+
+  const source = Buffer.concat([
+    main.subarray(0, regionStart),
+    Buffer.from(padded, "utf8"),
+    main.subarray(regionStart + regionLength)
+  ]);
+  return { changed: true, source, regionStart, regionLength };
+}
