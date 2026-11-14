@@ -182,12 +182,31 @@ npm test
 With both set the whole suite runs; without them the dependent tests are
 skipped with a message naming the variable that is missing, and nothing fails.
 
-Both scripts accept an explicit asar path, and honour
-`DSH_DESKTOP_APP_ASAR`:
+Both scripts accept an explicit asar path and honour `DSH_DESKTOP_APP_ASAR`:
 
 ```sh
 node scripts/check-install.mjs "C:/path/to/resources/app.asar"
+DSH_DESKTOP_APP_ASAR="C:/path/to/resources/app.asar" npm run check:install
 ```
+
+With neither supplied they find the installation themselves, in this order
+(`src/desktop-asar.js`):
+
+1. the first command-line argument
+2. `DSH_DESKTOP_APP_ASAR`
+3. `resources/app.asar` beside `process.execPath`, when that is the desktop
+   executable — the case inside the Host
+4. the backup sidecar `~/.dsh/tray-restart-backup/meta.json`, which records the
+   asar an earlier patch came from
+5. the Windows uninstall registry, where the desktop publishes `DisplayIcon`
+   and `InstallLocation`
+6. `resources/app.asar` beside `process.execPath` — the old fallback, kept last
+   so the resolution never throws
+
+Steps 4 and 5 are what make `npm run check:install` work from a plain terminal,
+where `process.execPath` is `node.exe` and step 3 does not apply. If the asar is
+still not found, the error names every probe that was tried and the two ways to
+supply the path.
 
 `check:install` exit codes: `0` patched, `1` not patched, `2` the asar is
 missing or unreadable. `restore:install` exit codes: `0` restored or already
@@ -199,9 +218,9 @@ and the installed asar from `DSH_TRAY_ASAR` (see
 a temporary copy of the installed asar — no test writes to the real `app.asar`
 or to `~/.dsh/tray-restart-backup`.
 
-The scripts derive their default asar path from the running executable
-(`resources/app.asar` beside `process.execPath`), the same rule the Host entry
-uses. Pass an explicit path or `DSH_DESKTOP_APP_ASAR` when Node lives elsewhere.
+The scripts resolve the asar path by probing the machine (see
+[Development](#development)); pass an explicit path or `DSH_DESKTOP_APP_ASAR` to
+override the probe.
 
 ## References
 
@@ -230,6 +249,7 @@ Prior art reviewed before building:
 │   └── restore-install.mjs restore the stock tray region
 ├── src/
 │   ├── index.js           Host plugin entry
+│   ├── desktop-asar.js    locating the installed app.asar
 │   ├── asar.js            asar I/O and integrity rewrite
 │   ├── patch.js           pure equal-length patch core
 │   └── backup.js          stock-region backup

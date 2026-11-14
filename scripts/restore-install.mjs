@@ -9,6 +9,9 @@
  * roll back the asar patch. The stock bytes come from the Backup written before
  * the first patch; without one the restore is refused rather than guessed.
  *
+ * Without an argument the asar is resolved by probing the machine (see
+ * `src/desktop-asar.js`), the same way `check-install` resolves it.
+ *
  * Exit codes: 0 restored or already stock, 1 restore failed, 2 the asar is
  * missing or unreadable.
  */
@@ -16,17 +19,22 @@
 import { existsSync } from "node:fs";
 
 import { restoreTrayRestart } from "../src/asar.js";
-import { RESTORE_EXIT, asarPathFromArgs, formatRestoreReport } from "./install-status.mjs";
+import {
+  RESTORE_EXIT,
+  formatRestoreReport,
+  missingAsarMessage,
+  resolveInstallAsar
+} from "./install-status.mjs";
 
-const asarPath = asarPathFromArgs(process.argv.slice(2), process.env);
+const resolution = resolveInstallAsar(process.argv.slice(2), process.env);
 
-if (!existsSync(asarPath)) {
-  console.error(`app.asar not found: ${asarPath}`);
+if (!existsSync(resolution.path)) {
+  console.error(missingAsarMessage(resolution));
   process.exit(RESTORE_EXIT.unreadable);
 }
 
 try {
-  const result = restoreTrayRestart(asarPath);
+  const result = restoreTrayRestart(resolution.path);
   console.log(formatRestoreReport(result));
   process.exitCode = RESTORE_EXIT.ok;
 } catch (error) {

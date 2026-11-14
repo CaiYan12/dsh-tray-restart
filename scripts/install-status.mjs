@@ -11,36 +11,58 @@
  */
 
 import { existsSync, openSync, closeSync, readSync, fstatSync } from "node:fs";
-import { dirname, join } from "node:path";
 
 import { PATCH_MARKER } from "../src/patch.js";
 import { backupDir, readBackup } from "../src/backup.js";
+import { ASAR_ENV, asarPathFromExecPath, formatMissingAsar, resolveAsarPath } from "../src/desktop-asar.js";
 
-/** Environment variable that points the scripts at a specific asar. */
-export const ASAR_ENV = "DSH_DESKTOP_APP_ASAR";
+export { ASAR_ENV, asarPathFromExecPath };
 
 /**
- * `resources/app.asar` beside a running executable.
+ * The asar the scripts fall back to when nothing else resolves: `resources/app.asar`
+ * beside the running executable.
  *
- * This is the same rule the Host entry uses, so the scripts and the plugin always
- * agree on which asar they mean. It is derived rather than hardcoded: an install
- * directory is a property of one machine, not of this repository.
+ * Under `node` this is a path that usually does not exist, which is why the
+ * resolution below probes the machine before it settles for this one.
+ */
+export const DEFAULT_ASAR_PATH = asarPathFromExecPath(process.execPath);
+
+/**
+ * Resolve the asar path: an argument, then `DSH_DESKTOP_APP_ASAR`, then the
+ * desktop executable itself, then the backup, then the Windows registry, then
+ * `resources/app.asar` beside `process.execPath`.
  *
- * @param {string} execPath the executable to derive from, normally `process.execPath`.
+ * @param {string[]} argv the arguments after the script name.
+ * @param {Record<string, string | undefined>} env
+ * @param {Parameters<typeof resolveAsarPath>[0]} [input] probe overrides, for tests.
  * @returns {string}
  */
-export function asarPathFromExecPath(execPath) {
-  return join(dirname(execPath), "resources", "app.asar");
+export function asarPathFromArgs(argv, env, input = {}) {
+  return resolveAsarPath({ ...input, argv, env }).path;
 }
 
 /**
- * The asar the scripts fall back to when neither an argument nor the environment
- * names one: `resources/app.asar` beside the running Node executable.
+ * The same resolution, keeping the source and the probes that were tried, so a
+ * missing asar can be reported with what was attempted.
  *
- * Run the scripts with the desktop app's own executable (`DSH_DESKTOP_APP_ASAR`
- * or an explicit argument) when Node lives somewhere else, as it usually does.
+ * @param {string[]} argv
+ * @param {Record<string, string | undefined>} env
+ * @param {Parameters<typeof resolveAsarPath>[0]} [input]
  */
-export const DEFAULT_ASAR_PATH = asarPathFromExecPath(process.execPath);
+export function resolveInstallAsar(argv, env, input = {}) {
+  return resolveAsarPath({ ...input, argv, env });
+}
+
+/**
+ * The message a script prints when the resolved asar does not exist: what was
+ * tried, and the two ways to supply the path.
+ *
+ * @param {ReturnType<typeof resolveAsarPath>} resolution
+ * @returns {string}
+ */
+export function missingAsarMessage(resolution) {
+  return formatMissingAsar(resolution);
+}
 
 /** Byte string that opens the tray region inside `lib/main.js`. */
 const REGION_START_MARKER = "//#region lib/types/tray.js";
@@ -56,22 +78,6 @@ export const CHECK_EXIT = { patched: 0, notPatched: 1, unreadable: 2 };
 
 /** Exit code of `restore-install` when the asar is missing or not an asar. */
 export const RESTORE_EXIT = { ok: 0, failed: 1, unreadable: 2 };
-
-/**
- * Resolve the asar path: the first positional argument, then the environment,
- * then the installed default.
- *
- * @param {string[]} argv the arguments after the script name.
- * @param {Record<string, string | undefined>} env
- * @returns {string}
- */
-export function asarPathFromArgs(argv, env) {
-  const fromArgs = argv?.[0];
-  if (typeof fromArgs === "string" && fromArgs !== "") return fromArgs;
-  const fromEnv = env?.[ASAR_ENV];
-  if (typeof fromEnv === "string" && fromEnv !== "") return fromEnv;
-  return DEFAULT_ASAR_PATH;
-}
 
 /** Read exactly `length` bytes at `position`, looping over short reads. */
 function readExactly(fd, length, position) {
@@ -304,5 +310,4 @@ export function formatRestoreReport(result) {
   }
   return lines.join("\n");
 }
-
 

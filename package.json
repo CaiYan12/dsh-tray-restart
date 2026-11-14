@@ -13,6 +13,7 @@
   "files": [
     "src/index.js",
     "src/asar.js",
+    "src/desktop-asar.js",
     "src/patch.js",
     "src/backup.js",
     "cordis.patch.yml",

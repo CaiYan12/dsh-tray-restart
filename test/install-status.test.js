@@ -25,7 +25,9 @@ import {
   checkExitCode,
   formatCheckReport,
   formatRestoreReport,
-  readInstallStatus
+  missingAsarMessage,
+  readInstallStatus,
+  resolveInstallAsar
 } from "../scripts/install-status.mjs";
 
 /**
@@ -197,10 +199,50 @@ test("the restore report says already stock when nothing changed", () => {
 
 // ── asarPathFromArgs: argument, then environment, then default ─────────────
 
-test("asarPathFromArgs prefers the argument, then the environment, then the default", () => {
-  assert.equal(asarPathFromArgs(["C:\\a\\app.asar"], {}), "C:\\a\\app.asar");
-  assert.equal(asarPathFromArgs([], { DSH_DESKTOP_APP_ASAR: "C:\\b\\app.asar" }), "C:\\b\\app.asar");
-  assert.equal(asarPathFromArgs([], {}), DEFAULT_ASAR_PATH);
+test("asarPathFromArgs prefers the argument, then the environment, then the probes", () => {
+  const probes = { execPath: "C:\\Program Files\\nodejs\\node.exe", platform: "win32", exists: () => true };
+  assert.equal(asarPathFromArgs(["C:\\a\\app.asar"], {}, probes), "C:\\a\\app.asar");
+  assert.equal(asarPathFromArgs([], { DSH_DESKTOP_APP_ASAR: "C:\\b\\app.asar" }, probes), "C:\\b\\app.asar");
+});
+
+test("asarPathFromArgs finds the install through the probe when nothing is passed", () => {
+  // The terminal case: process.execPath is node.exe, the backup and the registry
+  // know where the desktop is. The scripts must use that answer, not node's.
+  const installed = join("C:\\Program Files\\Deepseek", "resources", "app.asar");
+  const path = asarPathFromArgs([], {}, {
+    execPath: "C:\\Program Files\\nodejs\\node.exe",
+    platform: "win32",
+    exists: (candidate) => candidate === installed,
+    fromBackup: () => installed,
+    fromRegistry: () => null
+  });
+  assert.equal(path, installed);
+});
+
+test("asarPathFromArgs keeps the execPath fallback when no probe answers", () => {
+  const path = asarPathFromArgs([], {}, {
+    execPath: "C:\\Program Files\\nodejs\\node.exe",
+    platform: "win32",
+    exists: () => false,
+    fromBackup: () => null,
+    fromRegistry: () => null
+  });
+  assert.equal(path, join("C:\\Program Files\\nodejs", "resources", "app.asar"));
+});
+
+test("resolveInstallAsar keeps the source so a missing asar can be explained", () => {
+  const resolution = resolveInstallAsar([], {}, {
+    execPath: "C:\\Program Files\\nodejs\\node.exe",
+    platform: "win32",
+    exists: () => false,
+    fromBackup: () => null,
+    fromRegistry: () => null
+  });
+  assert.equal(resolution.source, "execPath-fallback");
+  assert.equal(resolution.probed.length, 2);
+  const message = missingAsarMessage(resolution);
+  assert.match(message, /app\.asar not found at/);
+  assert.match(message, /DSH_DESKTOP_APP_ASAR/);
 });
 
 // ── the scripts as processes: the acceptance criteria ─────────────────────

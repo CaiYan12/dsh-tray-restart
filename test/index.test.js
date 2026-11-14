@@ -9,10 +9,14 @@ import {
   asarPathFrom,
   describeResult,
   DSH_RANGE,
+  NOTIFY_TIMEOUT_MS,
+  NOTIFY_VISIBLE_MS,
   notificationBody,
   notificationCopy,
+  notificationScript,
   readDesktopVersion,
   shouldPatch,
+  showNotification,
   versionSupported
 } from "../src/index.js";
 import { REAL_ASAR_PATH, STOCK_MAIN_BYTES, asarSkip, repoRoot } from "./fixture.js";
@@ -411,4 +415,81 @@ test("apply refuses to patch when the DSH version cannot be read", async () => {
   assert.deepEqual(calls.applyTrayRestart, []);
   assert.equal(ctx.lines[0].level, "warn");
   assert.match(ctx.lines[0].message, /could not read the DSH version/);
+});
+// ── showNotification: the PowerShell balloon ──────────────────────────────
+//
+// The Host runs with ELECTRON_RUN_AS_NODE=1, so Electron's Notification is not
+// available and the old channel silently did nothing. The balloon tip is the
+// replacement; these cases pin the command it builds and its failure contract
+// without starting a real PowerShell.
+
+test("showNotification runs powershell with a hidden, non-interactive balloon script", () => {
+  const calls = [];
+  const ok = showNotification("body text", "title text", {
+    run: (command, args, options) => {
+      calls.push({ command, args, options });
+      return { status: 0 };
+    }
+  });
+
+  assert.equal(ok, true);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].command, "powershell");
+  assert.deepEqual(calls[0].args.slice(0, 2), ["-NoProfile", "-NonInteractive"]);
+  assert.equal(calls[0].args[calls[0].args.length - 2], "-Command");
+  const script = calls[0].args[calls[0].args.length - 1];
+  assert.match(script, /System\.Windows\.Forms\.NotifyIcon/);
+  assert.match(script, /ShowBalloonTip/);
+  assert.match(script, /'title text'/);
+  assert.match(script, /'body text'/);
+  assert.equal(calls[0].options.timeout, NOTIFY_TIMEOUT_MS);
+  assert.equal(calls[0].options.windowsHide, true);
+});
+
+test("showNotification reports false on a non-zero exit, a spawn error or a throw", () => {
+  assert.equal(showNotification("b", "t", { run: () => ({ status: 1 }) }), false);
+  assert.equal(showNotification("b", "t", { run: () => ({ status: null, error: new Error("ENOENT") }) }), false);
+  assert.equal(
+    showNotification("b", "t", {
+      run: () => {
+        throw new Error("powershell is blocked by policy");
+      }
+    }),
+    false
+  );
+});
+
+test("showNotification does nothing when there is no body to show", () => {
+  let called = false;
+  const ok = showNotification("", "title", {
+    run: () => {
+      called = true;
+      return { status: 0 };
+    }
+  });
+  assert.equal(ok, false);
+  assert.equal(called, false);
+});
+
+test("notificationScript escapes single quotes for PowerShell", () => {
+  const script = notificationScript("it's here", "don't");
+  assert.match(script, /'it''s here'/);
+  assert.match(script, /'don''t'/);
+});
+
+test("notificationScript keeps the balloon on screen for the visible duration", () => {
+  const script = notificationScript("t", "b");
+  assert.match(script, new RegExp(`Start-Sleep -Milliseconds ${NOTIFY_VISIBLE_MS}`));
+  assert.match(script, new RegExp(`ShowBalloonTip\\(${NOTIFY_VISIBLE_MS * 2}\\)`));
+});
+
+test("apply warns when the balloon cannot be shown but still succeeds", async () => {
+  const ctx = fakeCtx();
+  const { value } = deps({ notify: () => false });
+  await assert.doesNotReject(() => apply(ctx, value));
+
+  assert.equal(ctx.lines.filter((line) => line.level === "info").length, 1);
+  const warnings = ctx.lines.filter((line) => line.level === "warn");
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0].message, /restart reminder/);
 });

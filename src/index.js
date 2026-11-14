@@ -18,7 +18,12 @@
  *
  * `apply(ctx, deps)` wires those to the real patch module and the real
  * notification channel; the dependencies are injectable so the tests never
- * touch an installed asar or a live Electron process.
+ * touch an installed asar, a live Electron process or a real PowerShell.
+ *
+ * The notification is a PowerShell balloon tip, not Electron's `Notification`:
+ * the Host runs with `ELECTRON_RUN_AS_NODE=1`, which loads Electron as plain
+ * Node, so `import("electron")` yields an empty object and there is no
+ * `Notification` to call.
  *
  * The bubble copy lives in `locale/{en,zh}.json` beside this file, not in the
  * code, so the plugin's own text follows the same convention as its title and
@@ -27,6 +32,7 @@
  * that way.
  */
 
+import { spawnSync } from "node:child_process";
 import { closeSync, existsSync, fstatSync, openSync, readFileSync, readSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -259,21 +265,78 @@ export function versionSupported(version, range) {
 }
 
 /**
- * Show one tray bubble through Electron's Notification.
+ * Milliseconds a balloon script may run before it is killed.
  *
- * Inside the Host process `electron` is not importable, so this returns false
- * and the caller keeps going with the log line alone. The failure is swallowed
- * on purpose: a notification is a nicety, never a reason to fail startup.
+ * PowerShell itself takes roughly 0.3 s to start on the measured machine, and
+ * the script below sleeps 1.5 s so the tip stays on screen; the budget leaves
+ * room for a slower machine without ever holding up startup for long.
+ */
+export const NOTIFY_TIMEOUT_MS = 5_000;
+
+/** Milliseconds the balloon stays on screen before the icon is disposed. */
+export const NOTIFY_VISIBLE_MS = 1_500;
+
+/**
+ * PowerShell that shows one balloon tip and waits for it to be clicked or to
+ * time out.
+ *
+ * The Host runs with `ELECTRON_RUN_AS_NODE=1`, which turns Electron into plain
+ * Node: `import("electron")` succeeds but exports an empty object, so Electron's
+ * `Notification` is `undefined` and the old channel never showed anything. A
+ * balloon tip through `System.Windows.Forms.NotifyIcon` is the one notification
+ * surface available to a plain Node process on Windows.
+ *
+ * The icon lives in the notification area for a few seconds, which is why the
+ * script blocks: the child process must outlive the tip, and the caller gives it
+ * a bounded timeout. `ShowBalloonTip` is best effort — Windows may suppress
+ * balloons under Focus Assist — so a zero exit status means "asked the shell",
+ * not "the user saw it".
+ *
+ * @param {string} title
+ * @param {string} body
+ * @returns {string}
+ */
+export function notificationScript(title, body) {
+  const quote = (text) => `'${String(text).replace(/'/g, "''")}'`;
+  return [
+    "Add-Type -AssemblyName System.Windows.Forms;",
+    "$n = New-Object System.Windows.Forms.NotifyIcon;",
+    "$n.Icon = [System.Drawing.SystemIcons]::Information;",
+    `$n.BalloonTipTitle = ${quote(title)};`,
+    `$n.BalloonTipText = ${quote(body)};`,
+    "$n.Visible = $true;",
+    `$n.ShowBalloonTip(${NOTIFY_VISIBLE_MS * 2});`,
+    `Start-Sleep -Milliseconds ${NOTIFY_VISIBLE_MS};`,
+    "$n.Dispose();"
+  ].join(" ");
+}
+
+/**
+ * Show one balloon tip through PowerShell.
+ *
+ * Never throws and never blocks for longer than `timeout`: a notification is a
+ * nicety, never a reason to fail or delay startup. Every failure — no
+ * PowerShell, a policy that blocks it, a non-zero exit, the timeout — is
+ * reported as `false` and the caller logs it.
  *
  * @param {string} body
  * @param {string} title
- * @returns {Promise<boolean>}
+ * @param {{ run?: (command: string, args: string[], options: object) => { status: number | null, error?: Error } }} [deps]
+ * @returns {boolean}
  */
-async function showNotification(body, title) {
-  const { Notification } = await import("electron");
-  if (typeof Notification?.isSupported === "function" && !Notification.isSupported()) return false;
-  new Notification({ title, body, silent: true }).show();
-  return true;
+export function showNotification(body, title, deps = {}) {
+  const run = deps.run ?? spawnSync;
+  if (!body) return false;
+  try {
+    const result = run(
+      "powershell",
+      ["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", notificationScript(title, body)],
+      { timeout: NOTIFY_TIMEOUT_MS, windowsHide: true, stdio: "ignore" }
+    );
+    return result?.status === 0;
+  } catch {
+    return false;
+  }
 }
 
 /** The language the desktop is running in, best effort. */
@@ -368,7 +431,10 @@ export async function apply(ctx, overrides = {}) {
     // the same dictionary.
     const language = options.language();
     const copy = notificationCopy(language);
-    await options.notify(copy.body, copy.title);
+    const shown = await options.notify(copy.body, copy.title);
+    if (shown === false) {
+      logger.warn("could not show the restart reminder; the log line above is the only notice");
+    }
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     logger.warn(`could not show the restart reminder: ${reason}`);
